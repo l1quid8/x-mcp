@@ -1,0 +1,33 @@
+# Local Python environments and build output
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Runtime state and credentials must stay outside source control
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*owner-key*
+*encryption-key*
+*connection*.json
+*cookies*.json
+state/
+media/
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/

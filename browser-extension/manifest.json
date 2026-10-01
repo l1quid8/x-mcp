@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "X MCP \u2014 Connect Account",
+  "version": "0.3.0",
+  "description": "Connect your current X session to your private X MCP server after explicit owner approval.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAujt7gTPeQ9VWFJwxrsG2EJPtRuiyyIs0LQczECkDAZbn9J78RQwffC1GjxzH9emLGdyepyOj4K8wAy+29KATfs3p0eq83au2kbd0xIC3A2qOhoJI7fkb9qpmBU3MisvFbsW+zrj6uerVejRNPcUStAdMA/Crx74XxxtMrmMjZd74/LIYhko0eK+5xfrDw99UZpT4ggj6iNC5jWwITcP4GHnAAUAtnxv8giq20IF7+yP0066qVTMFBBe2zBOtzoFj43t4k0hJqkdRfWHDEJ9LEQM6fbhORRNKqQi1MTxBa12XaWHgbfsA8EhBKD5jnaYZ4sjXcMBR1VoIymbZLKatdwIDAQAB",
+  "action": {
+    "default_title": "Connect X to X MCP"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [],
+  "host_permissions": [
+    "https://mcp.example.invalid/*"
+  ],
+  "optional_host_permissions": [
+    "https://x.com/*"
+  ],
+  "incognito": "not_allowed",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https://mcp.example.invalid; base-uri 'none'"
+  },
+  "optional_permissions": [
+    "cookies"
+  ]
+}

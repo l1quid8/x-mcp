@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X account</title><link rel="stylesheet" href="style.css"></head>
+<body><main><h1>Connect your X account</h1>
+<p>Use the account already signed into X in this Brave profile.</p>
+<ol><li><a id="open-x" href="https://x.com/home" target="_blank" rel="noreferrer">Open X</a> and switch to the account you want to connect.</li><li>Select that same account below, then grant access.</li></ol>
+<label for="account">X handle to connect</label><input id="account" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="15" placeholder="your_handle" required>
+<label for="tier">Account tier</label><select id="tier"><option value="unknown">Unknown</option><option value="free">Free</option><option value="basic">Basic</option><option value="premium">Premium</option><option value="premium_plus">Premium Plus</option></select>
+<p>This sends that account’s X session directly to your private X MCP server, where it is verified and stored encrypted. It does not publish a post.</p>
+<button id="connect">Grant access and connect</button><button id="cancel" hidden>Cancel</button>
+<section id="pair" hidden><h2>Approve the connection</h2><p>Match this code on the X MCP approval page:</p><strong id="code"></strong><p><a id="approval" target="_blank" rel="noreferrer">Open approval page</a></p><p>Use your X MCP owner key there. Keep this tab open.</p></section>
+<p id="status" role="status" aria-live="polite"></p>
+<p class="small">Connect one account at a time. Switch to the correct signed-in account in X before each connection. Your X MCP owner key is separate from your X password.</p>
+</main><script type="module" src="connect.js"></script></body></html>

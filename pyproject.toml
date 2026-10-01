@@ -1,0 +1,49 @@
+[project]
+name = "x-mcp"
+version = "0.1.0"
+description = "One account-scoped MCP server for public X reading, publishing, and cleanup"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp==2.0.0",
+  "httpx>=0.27",
+  "twikit @ git+https://github.com/d60/twikit@c3b7220866f8582009fe2d1155b6fe92192a2711",
+  "aiohttp>=3.12",
+  "cryptography>=46",
+  "pillow>=12",
+  "av>=16",
+  "markdown-it-py>=4",
+  "pydantic>=2,<3",
+  "starlette>=0.46",
+  "uvicorn>=0.35",
+  "twitter-text-parser==3.0.0",
+  "setuptools==80.9.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project.scripts]
+x-mcp = "x_mcp:main"
+x-mcp-admin = "x_publisher.admin:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/x_mcp", "src/x_publisher", "src/nitter_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"third_party/nitter-mcp/LICENSE" = "nitter_mcp/LICENSE"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=1",
+  "pyyaml>=6.0.3",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

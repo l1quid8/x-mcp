@@ -1,0 +1,488 @@
+{
+  "Candidate": {
+    "additionalProperties": false,
+    "properties": {
+      "schema_version": {
+        "const": "1",
+        "default": "1",
+        "title": "Schema Version",
+        "type": "string"
+      },
+      "candidate_id": {
+        "title": "Candidate Id",
+        "type": "string"
+      },
+      "account_id": {
+        "title": "Account Id",
+        "type": "string"
+      },
+      "content_id": {
+        "title": "Content Id",
+        "type": "string"
+      },
+      "content_type": {
+        "enum": [
+          "POST",
+          "REPLY",
+          "QUOTE",
+          "REPOST",
+          "DM"
+        ],
+        "title": "Content Type",
+        "type": "string"
+      },
+      "author_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Author Id"
+      },
+      "text": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Text"
+      },
+      "created_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Created At"
+      },
+      "reply_to": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Reply To"
+      },
+      "quote_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Quote Id"
+      },
+      "repost_of": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Repost Of"
+      },
+      "conversation_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Conversation Id"
+      },
+      "participant_ids": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Participant Ids",
+        "type": "array"
+      },
+      "engagement": {
+        "anyOf": [
+          {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Engagement"
+      },
+      "media": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Media",
+        "type": "array"
+      },
+      "related_posts": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Related Posts",
+        "type": "array"
+      },
+      "author": {
+        "anyOf": [
+          {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Author"
+      },
+      "url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Url"
+      },
+      "observed_at": {
+        "title": "Observed At",
+        "type": "number"
+      },
+      "source": {
+        "default": "x_api_v2",
+        "enum": [
+          "x_api_v2",
+          "x_session",
+          "owner_browser_observation",
+          "public_x_embed"
+        ],
+        "title": "Source",
+        "type": "string"
+      }
+    },
+    "required": [
+      "candidate_id",
+      "account_id",
+      "content_id",
+      "content_type",
+      "observed_at"
+    ],
+    "title": "Candidate",
+    "type": "object"
+  },
+  "Decision": {
+    "$defs": {
+      "Probabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "KEEP": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Keep",
+            "type": "number"
+          },
+          "DELETE": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Delete",
+            "type": "number"
+          },
+          "REVIEW": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Review",
+            "type": "number"
+          }
+        },
+        "required": [
+          "KEEP",
+          "DELETE",
+          "REVIEW"
+        ],
+        "title": "Probabilities",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "label": {
+        "enum": [
+          "KEEP",
+          "DELETE",
+          "REVIEW"
+        ],
+        "title": "Label",
+        "type": "string"
+      },
+      "probabilities": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Probabilities"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "engine": {
+        "anyOf": [
+          {
+            "maxLength": 100,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Engine"
+      },
+      "model_version": {
+        "anyOf": [
+          {
+            "maxLength": 100,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Model Version"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "maxLength": 2000,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Reason"
+      }
+    },
+    "required": [
+      "label"
+    ],
+    "title": "Decision",
+    "type": "object"
+  },
+  "ProposedAction": {
+    "$defs": {
+      "Decision": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "enum": [
+              "KEEP",
+              "DELETE",
+              "REVIEW"
+            ],
+            "title": "Label",
+            "type": "string"
+          },
+          "probabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Probabilities"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Engine"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "Decision",
+        "type": "object"
+      },
+      "Probabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "KEEP": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Keep",
+            "type": "number"
+          },
+          "DELETE": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Delete",
+            "type": "number"
+          },
+          "REVIEW": {
+            "maximum": 1,
+            "minimum": 0,
+            "title": "Review",
+            "type": "number"
+          }
+        },
+        "required": [
+          "KEEP",
+          "DELETE",
+          "REVIEW"
+        ],
+        "title": "Probabilities",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "candidate_id": {
+        "maxLength": 128,
+        "minLength": 1,
+        "title": "Candidate Id",
+        "type": "string"
+      },
+      "action": {
+        "enum": [
+          "DELETE_POST",
+          "UNDO_REPOST",
+          "DELETE_DM"
+        ],
+        "title": "Action",
+        "type": "string"
+      },
+      "decision": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Decision"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "candidate_id",
+      "action"
+    ],
+    "title": "ProposedAction",
+    "type": "object"
+  },
+  "ProtectionPolicy": {
+    "additionalProperties": false,
+    "properties": {
+      "protected_ids": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10000,
+        "title": "Protected Ids",
+        "type": "array"
+      },
+      "protected_dm_conversations": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10000,
+        "title": "Protected Dm Conversations",
+        "type": "array"
+      },
+      "protect_pinned": {
+        "default": true,
+        "title": "Protect Pinned",
+        "type": "boolean"
+      },
+      "min_age_seconds": {
+        "default": 0,
+        "minimum": 0,
+        "title": "Min Age Seconds",
+        "type": "integer"
+      },
+      "engagement_thresholds": {
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "title": "Engagement Thresholds",
+        "type": "object"
+      }
+    },
+    "title": "ProtectionPolicy",
+    "type": "object"
+  }
+}
