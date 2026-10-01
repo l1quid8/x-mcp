@@ -9,11 +9,50 @@ from mcp.server.auth.provider import AuthorizationParams, RegistrationError, Tok
 import pytest
 
 from x_publisher.app import create_app
-from x_publisher.auth import OwnerOAuth
+from x_publisher.auth import OwnerOAuth, callback_key
 from x_publisher.core import DEFAULT_SCOPES, ISSUER, RESOURCE, SCOPES
 from test_publisher import store, Backend, rpc
 
 CALLBACK = "https://chatgpt.com/connector/oauth/publisher-test"
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:43123/callback/Abcdefgh1234",
+    "http://127.0.0.2:43123/callback/Abcdefgh1234",
+    "http://127.0.0.1:43123/callback/Abcdefgh1234/extra",
+    "http://127.0.0.1:43123/callback/Abcdefgh1234?next=evil",
+    "http://user@127.0.0.1:43123/callback/Abcdefgh1234",
+    "http://127.0.0.1:0/callback/Abcdefgh1234",
+    "https://127.0.0.1:43123/callback/Abcdefgh1234",
+])
+def test_reject_unapproved_loopback_callback_shapes(url):
+    assert callback_key(url) is None
+
+
+async def test_codex_loopback_callback_requires_approved_path(store):
+    path = "http://127.0.0.1/callback/Abcdefgh1234"
+    actual = "http://127.0.0.1:43123/callback/Abcdefgh1234"
+    assert callback_key(actual) == path
+    store.set_setting("callbacks", [path])
+    app = create_app(store, "owner-" + "x" * 60, Backend)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test",
+            follow_redirects=False) as client:
+        md = (await client.get("/.well-known/oauth-authorization-server/x-mcp/oauth")).json()
+        body = {"redirect_uris": [actual], "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"]}
+        registered = await client.post(md["registration_endpoint"], json=body)
+        assert registered.status_code == 201, registered.text
+        rejected = await client.post(md["registration_endpoint"], json={
+            **body, "redirect_uris": ["http://127.0.0.1:43123/callback/WrongPath1234"]})
+        assert rejected.status_code == 400
+        params = {"client_id": registered.json()["client_id"], "redirect_uri": actual,
+                  "response_type": "code", "code_challenge": "v" * 43,
+                  "code_challenge_method": "S256", "scope": "x:read", "resource": RESOURCE,
+                  "state": "codexstate"}
+        authorization = await client.get(md["authorization_endpoint"], params=params)
+        assert authorization.status_code in (302, 303, 307)
+        assert authorization.headers["location"].startswith(ISSUER + "/consent?")
 
 
 async def test_oauth_scopes_refresh_revocation(store):

@@ -3,10 +3,11 @@ import hashlib
 import hmac
 import html
 import json
+import re
 import secrets
 import sqlite3
 import time
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from mcp.server.auth.provider import AccessToken, AuthorizationCode, AuthorizationParams, AuthorizeError, RefreshToken, RegistrationError, TokenError, construct_redirect_uri
 from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
@@ -30,6 +31,26 @@ ACCOUNT_PERMISSIONS = {
     "cleanup:protect": "Change cleanup protection rules",
 }
 EXPLICIT_CONSENT_SCOPES = frozenset({"publisher:publish", "cleanup:execute", "cleanup:protect"})
+
+
+def callback_key(value):
+    """Match an approved callback; loopback ports may vary between Codex logins."""
+    try:
+        parsed = urlsplit(str(value))
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            return None
+        if (parsed.scheme == "https" and parsed.hostname == "chatgpt.com"
+                and parsed.port in (None, 443)
+                and (parsed.path.startswith("/connector/oauth/")
+                     or parsed.path == "/connector_platform_oauth_redirect")):
+            return str(value)
+        if (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                and (parsed.port is None or 1 <= parsed.port <= 65535)
+                and re.fullmatch(r"/callback(?:/[A-Za-z0-9_-]{8,64})?", parsed.path)):
+            return "http://127.0.0.1" + parsed.path
+    except ValueError:
+        pass
+    return None
 
 
 class OwnerOAuth:
@@ -80,14 +101,14 @@ class OwnerOAuth:
 
     async def register_client(self, client_info):
         allowed = self.store.setting("callbacks", [])
-        if not client_info.redirect_uris or any(str(u) not in allowed for u in client_info.redirect_uris):
+        if not client_info.redirect_uris or any(callback_key(u) not in allowed for u in client_info.redirect_uris):
             raise RegistrationError("invalid_redirect_uri", "Administrator must allow this exact connector callback")
         self.put("client", client_info.client_id, client_info.model_dump(mode="json"), 365*86400)
 
     async def authorize(self, client, params):
         if params.resource != RESOURCE:
             raise AuthorizeError("invalid_target", "Use the configured X MCP resource URL")
-        if str(params.redirect_uri) not in self.store.setting("callbacks", []):
+        if callback_key(params.redirect_uri) not in self.store.setting("callbacks", []):
             raise AuthorizeError("unauthorized_client", "Callback is not allowed")
         if set(params.scopes or DEFAULT_SCOPES) - set(SCOPES):
             raise AuthorizeError("invalid_scope", "Unknown X MCP scope")

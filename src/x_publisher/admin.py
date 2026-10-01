@@ -187,15 +187,13 @@ def main():
                 store.db.execute("UPDATE tokens SET active=0 WHERE label=?", (args.label,))
             print("Matching private client tokens revoked")
         elif args.command == "allow-callback":
-            from urllib.parse import urlsplit
-            url = urlsplit(args.url)
-            if url.scheme != "https" or url.hostname != "chatgpt.com" or url.query or url.fragment or url.username or url.password or url.port not in (None, 443):
-                raise ValueError("Use the exact HTTPS callback shown by the ChatGPT connector")
-            if not (url.path.startswith("/connector/oauth/") or url.path == "/connector_platform_oauth_redirect"):
-                raise ValueError("Unexpected callback path")
+            from .auth import callback_key
+            callback = callback_key(args.url)
+            if callback is None:
+                raise ValueError("Use the exact ChatGPT HTTPS callback or Codex 127.0.0.1 callback path")
             allowed = store.setting("callbacks", [])
-            store.set_setting("callbacks", sorted(set(allowed + [args.url])))
-            print("Exact callback added; reconnect the ChatGPT connector")
+            store.set_setting("callbacks", sorted(set(allowed + [callback])))
+            print("Callback path approved; reconnect the MCP client")
         elif args.command == "revoke-oauth":
             import sqlite3
             path = store.directory / "oauth.sqlite3"

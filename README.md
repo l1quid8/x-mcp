@@ -123,6 +123,30 @@ file with your resource URL and selected scopes. For OAuth clients, allow their
 exact callback with `x-mcp-admin allow-callback` and approve the requested
 accounts and sensitive scopes on your consent page.
 
+## Connect Codex
+
+After your server is reachable over HTTPS, add its MCP resource URL to Codex:
+
+```sh
+codex mcp add x-mcp --url https://mcp.example.com/x-mcp/mcp
+```
+
+Codex CLI, the IDE extension, and the ChatGPT desktop app share this local MCP
+configuration. The server requires authentication. You can use OAuth with
+`codex mcp login x-mcp --oauth-client-registration dcr`; the server owner must
+first approve the Codex callback path with `x-mcp-admin allow-callback`. Codex
+uses a `127.0.0.1` callback whose port can change between logins, so approval
+is tied to its exact `/callback/...` path. The consent page then lets the owner
+grant only the requested scopes and connected accounts. New grants request
+`x:read` by default; request publishing or cleanup scopes explicitly when
+needed.
+
+For local clients using a direct credential, keep the token in a private file
+outside the repository and supply it through Codex's `http_headers_helper` or
+an environment variable. Do not put bearer tokens in a public config or commit
+them to this repository. Keep write-tool approval prompts enabled in your
+client. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+
 ## Tools and permissions
 
 | Permission | Tools | Purpose |
