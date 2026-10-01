@@ -61,10 +61,10 @@ a root-owned location such as `/opt/x-mcp`. Create a dedicated service user and
 initialize private keys and state once:
 
 ```sh
-sudo useradd --system --home-dir /var/lib/x-mcp --shell /usr/sbin/nologin xpublisher
-sudo env X_MCP_ORIGIN=https://mcp.example.com \
-  X_MCP_SERVICE_USER=xpublisher \
-  /opt/x-mcp/.venv/bin/x-mcp-admin init
+sudo useradd --system --home-dir /var/lib/x-mcp --shell /usr/sbin/nologin xmcp
+sudo env X_MCP_ORIGIN=https://mcp.example.com /opt/x-mcp/.venv/bin/x-mcp-admin init
+sudo install -d -o xmcp -g xmcp -m 0700 /var/lib/x-mcp/reader
+sudo chown -R xmcp:xmcp /var/lib/x-mcp
 ```
 
 The admin command requires root. By default it stores keys under `/etc/x-mcp`
@@ -75,8 +75,8 @@ can pass the keys through `LoadCredential`:
 
 ```ini
 [Service]
-User=xpublisher
-Group=xpublisher
+User=xmcp
+Group=xmcp
 WorkingDirectory=/opt/x-mcp
 ExecStart=/opt/x-mcp/.venv/bin/x-mcp
 Environment=X_MCP_ORIGIN=https://mcp.example.com
