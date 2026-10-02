@@ -291,5 +291,11 @@ def oauth_routes(provider):
         if r.path == "/.well-known/oauth-authorization-server":
             out.append(Route("/.well-known/oauth-authorization-server"+PREFIX+"/oauth", endpoint, methods=list(r.methods)))
     out.extend(create_protected_resource_routes(AnyHttpUrl(RESOURCE), [AnyHttpUrl(ISSUER)], SCOPES, resource_name="X MCP"))
+    async def unsupported_openid_configuration(request):
+        # This server publishes OAuth metadata, not OpenID Connect metadata.
+        # Keep the optional discovery probe outside the protected MCP mount.
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    out.append(Route(PREFIX+"/oauth/.well-known/openid-configuration",
+                     unsupported_openid_configuration, methods=["GET", "HEAD"]))
     out.append(Route(PREFIX+"/oauth/consent", provider.consent, methods=["GET", "POST"]))
     return out

@@ -114,6 +114,18 @@ async def test_chatgpt_stable_callback_registration_and_issuer_identification(st
         assert "tools" in tools.json()["result"]
 
 
+async def test_optional_openid_discovery_is_publicly_absent(store):
+    app = create_app(store, "owner-" + "x" * 60, Backend)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test") as client:
+        oidc = await client.get("/x-mcp/oauth/.well-known/openid-configuration")
+        assert oidc.status_code == 404
+        assert "www-authenticate" not in oidc.headers
+        oauth = await client.get("/.well-known/oauth-authorization-server/x-mcp/oauth")
+        assert oauth.status_code == 200
+        assert oauth.json()["issuer"] == ISSUER
+
+
 async def test_oauth_scopes_refresh_revocation(store):
     oauth = OwnerOAuth(store, "a"*64)
     store.set_setting("callbacks", [CALLBACK])
