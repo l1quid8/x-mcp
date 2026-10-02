@@ -211,7 +211,7 @@ def main():
         raise SystemExit(f"Operation failed ({type(exc).__name__}); no credential details printed") from None
     finally:
         store.db.close()
-        user = pwd.getpwnam(os.environ.get("X_MCP_SERVICE_USER", "xpublisher"))
+        user = pwd.getpwnam(os.environ.get("X_MCP_SERVICE_USER", "xmcp"))
         for path in [store.directory, store.media_directory, *store.directory.glob("*.sqlite3*")]:
             os.chown(path, user.pw_uid, user.pw_gid)
             if path.is_file():

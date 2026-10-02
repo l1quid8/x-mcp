@@ -103,8 +103,10 @@ sudo chown -R xmcp:xmcp /var/lib/x-mcp
 The admin command requires root. By default it stores keys under `/etc/x-mcp`
 and SQLite/media state under `/var/lib/x-mcp`. Use `CREDENTIALS_DIRECTORY` and
 `X_MCP_STATE_DIR` if your host uses different private paths. The service user
-must be able to write its state and reader-cache directories. A systemd service
-can pass the keys through `LoadCredential`:
+must be able to write its state and reader-cache directories. Admin commands
+restore state ownership to `xmcp` by default; set `X_MCP_SERVICE_USER` when
+your service runs as a different user. A systemd service can pass the keys
+through `LoadCredential`:
 
 ```ini
 [Service]
