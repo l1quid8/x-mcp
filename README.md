@@ -244,9 +244,9 @@ scopes on your consent page.
 
 ## Connect ChatGPT on the web
 
-This is a direct MCP app connection. It does not require a plugin archive or
-Plugin Creator. Your ChatGPT account or workspace must have Developer mode for
-custom MCP servers enabled.
+This flow creates a personal ChatGPT plugin entry from the MCP URL. It does not
+require a plugin archive or Plugin Creator. Your ChatGPT account or workspace
+must have Developer mode for custom MCP servers enabled.
 
 1. On the MCP server, allow ChatGPT's stable OAuth callback once:
 
@@ -260,6 +260,11 @@ custom MCP servers enabled.
 2. In ChatGPT, enable Developer mode under **Settings → Security and login**.
    Open **Plugins → Add → Create custom MCP server** and enter your public HTTPS
    endpoint, for example `https://mcp.example.com/x-mcp/mcp`. Choose OAuth.
+   For the optional icon, upload the included
+   [`x-mcp-icon.png`](src/x_publisher/assets/x-mcp-icon.png). It is a verified
+   1280 × 1280 RGB PNG. A `.png` filename alone does not make an image a
+   decodable PNG. Select only `x:read` under **Default scopes**; individual tools
+   request their own additional scopes.
 3. Complete the server's owner consent page. Select the account and permissions
    you want this ChatGPT connection to have, then let ChatGPT scan the tools.
 

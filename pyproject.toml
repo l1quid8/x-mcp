@@ -38,6 +38,7 @@ packages = ["src/x_mcp", "src/x_publisher", "src/nitter_mcp"]
 [tool.hatch.build.targets.wheel.force-include]
 "third_party/nitter-mcp/LICENSE" = "nitter_mcp/LICENSE"
 "src/x_publisher/assets/x-logo.jpg" = "x_publisher/assets/x-logo.jpg"
+"src/x_publisher/assets/x-mcp-icon.png" = "x_publisher/assets/x-mcp-icon.png"
 
 [dependency-groups]
 dev = [
