@@ -263,8 +263,10 @@ must have Developer mode for custom MCP servers enabled.
    For the optional icon, upload the included
    [`x-mcp-icon.png`](src/x_publisher/assets/x-mcp-icon.png). It is a verified
    1280 × 1280 RGB PNG. A `.png` filename alone does not make an image a
-   decodable PNG. Select only `x:read` under **Default scopes**; individual tools
-   request their own additional scopes.
+   decodable PNG. Select every listed scope under **Default scopes** to enable the
+   complete publishing, Buffer, media, and cleanup workflow. Set
+   `X_MCP_DEFAULT_SCOPES=all` on the server if every new client should request the
+   complete set by default.
 3. Complete the server's owner consent page. Select the account and permissions
    you want this ChatGPT connection to have, then let ChatGPT scan the tools.
 
@@ -290,8 +292,9 @@ first approve the Codex callback path in `/x-mcp/connect/client-settings` or wit
 uses a `127.0.0.1` callback whose port can change between logins, so approval
 is tied to its exact `/callback/...` path. The consent page then lets the owner
 grant only the requested scopes and connected accounts. New grants request
-`x:read` by default; request publishing or cleanup scopes explicitly when
-needed.
+`x:read` by default; set `X_MCP_DEFAULT_SCOPES=all` to request every available
+scope. The owner still selects accounts and explicitly approves sensitive
+publishing and cleanup permissions during consent.
 
 For local clients using a direct credential, keep the token in a private file
 outside the repository and supply it through Codex's `http_headers_helper` or
@@ -314,7 +317,8 @@ client. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/e
 | `cleanup:execute` | `execute_deletion_plan` | Dry run or execute an exact plan |
 | `cleanup:protect` | `cleanup_protections` (update) | Update deletion protections |
 
-New OAuth grants default to `x:read` only. Publishing and cleanup grants
+New OAuth grants request `x:read` unless `X_MCP_DEFAULT_SCOPES=all` is set.
+Publishing and cleanup grants
 require selected account IDs, and sensitive scopes need explicit approval.
 Buffer grants select `buffer:<channel_id>` destinations separately from direct
 X session accounts. Existing direct-session tokens do not gain Buffer access.
