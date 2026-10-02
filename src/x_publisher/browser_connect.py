@@ -26,6 +26,8 @@ CLIENT_SETTINGS = BASE + "/client-settings"
 BUFFER_SETTINGS = BASE + "/buffer"
 BUFFER_FALLBACK_SETTINGS = BUFFER_SETTINGS + "/fallback"
 BUFFER_REFRESH = BUFFER_SETTINGS + "/refresh"
+LOGO = BASE + "/assets/x-logo.jpg"
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "x-logo.jpg"
 COOKIE = "__Secure-xmcp-connect"
 WORKER = os.environ.get("X_MCP_BROWSER_WORKER_URL", "").rstrip("/")
 VIEW = os.environ.get("X_MCP_BROWSER_VIEW_URL", "").rstrip("/")
@@ -47,7 +49,10 @@ class BrowserConnect:
     def headers(self):
         return {"Cache-Control": "no-store", "Referrer-Policy": "strict-origin",
                 "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'; form-action 'self'; frame-ancestors 'none'"}
+                "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-src 'self'; form-action 'self'; frame-ancestors 'none'"}
+
+    async def logo(self, request):
+        return Response(LOGO_PATH.read_bytes(), media_type="image/jpeg", headers=self.headers())
 
     def login(self, request):
         value = request.cookies.get(COOKIE, "")
@@ -566,6 +571,7 @@ class BrowserConnect:
 
 def browser_connect_routes(flow):
     return [Route(BASE, flow.page, methods=["GET"]),
+            Route(LOGO, flow.logo, methods=["GET"]),
             Route(CLIENT_SETTINGS, flow.client_settings, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_page, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_save, methods=["POST"]),

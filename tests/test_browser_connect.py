@@ -74,6 +74,39 @@ async def test_setup_pages_share_owner_unlock_and_hide_vps_browser(app):
             assert_no_vps_signin_offer(page)
 
 
+async def test_uploaded_x_logo_is_public_and_shown_on_setup_pages(app):
+    logo_url = BASE + "/assets/x-logo.jpg"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
+        # The owner-key screen must be able to load its own image before login.
+        asset = await c.get(logo_url)
+        assert asset.status_code == 200
+        assert asset.headers["content-type"].startswith("image/jpeg")
+        assert asset.headers["x-content-type-options"] == "nosniff"
+        assert "set-cookie" not in asset.headers
+        assert len(asset.content) > 1024
+        assert asset.content.startswith(b"\xff\xd8\xff")
+
+        for signed_in in (False, True):
+            if signed_in:
+                await login(c)
+            for path in (BASE, BUFFER_SETTINGS):
+                page = await c.get(path)
+                assert page.status_code == 200
+                brand = re.search(r'<a\b(?=[^>]*class="brand")[^>]*>(.*?)</a>',
+                                  page.text, re.DOTALL)
+                assert brand is not None
+                image = re.search(r"<img\b[^>]*>", brand.group(1))
+                assert image is not None
+                assert f'src="{logo_url}"' in image.group(0)
+                # The visible X MCP name and labelled link already name the brand.
+                assert 'alt=""' in image.group(0)
+                assert 'aria-label="X MCP connections home"' in brand.group(0)
+                assert "X MCP" in brand.group(1)
+                assert re.search(r'<link\b(?=[^>]*rel="icon")(?=[^>]*href="'
+                                 + re.escape(logo_url) + r'")[^>]*>', page.text)
+                assert "img-src 'self'" in page.headers["content-security-policy"]
+
+
 async def test_setup_pages_show_buffer_and_direct_account_status(app, store):
     store.save_buffer_key("buffer-test-key-123456789")
     store.save_buffer_channels([{"account_id": "buffer:chan-1", "channel_id": "chan-1",

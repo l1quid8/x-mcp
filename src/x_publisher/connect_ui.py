@@ -2,7 +2,8 @@
 
 Text and attribute values are escaped here. Parameters ending in ``_html`` and
 ``content`` are trusted HTML fragments assembled by the caller, never user input.
-The pages use no JavaScript, external assets, or inline event handlers.
+The pages use no JavaScript or inline event handlers. The brand image is a
+same-origin asset shipped with the server.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from .core import PREFIX
 BASE = PREFIX + "/connect"
 BUFFER = BASE + "/buffer"
 CLIENTS = BASE + "/client-settings"
+LOGO = BASE + "/assets/x-logo.jpg"
 
 
 def escape(value: object) -> str:
@@ -102,8 +104,9 @@ a:hover{color:var(--brand-dark)}
 .skip-link:focus{top:10px}
 .site-header{background:#fff;border-bottom:1px solid var(--line)}
 .site-header__inner{max-width:1120px;margin:auto;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}
-.brand{color:var(--ink);font-weight:800;font-size:18px;letter-spacing:-.025em;text-decoration:none;white-space:nowrap}
-.brand__mark{display:inline-flex;width:30px;height:30px;align-items:center;justify-content:center;border-radius:9px;background:var(--brand);color:#fff;margin-right:9px;font-size:14px}
+.brand{display:inline-flex;align-items:center;color:var(--ink);font-weight:800;font-size:18px;letter-spacing:-.025em;text-decoration:none;white-space:nowrap}
+.brand__mark{position:relative;display:inline-block;width:40px;height:40px;overflow:hidden;border-radius:9px;background:#000;margin-right:9px;flex:none}
+.brand__mark img{position:absolute;left:50%;top:50%;width:68px;height:68px;max-width:none;transform:translate(-50%,-50%)}
 .site-nav{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
 .site-nav a{display:inline-flex;min-height:40px;align-items:center;padding:7px 12px;border-radius:9px;text-decoration:none;color:var(--muted);font-weight:650;font-size:14px}
 .site-nav a:hover,.site-nav a[aria-current="page"]{background:#edf0fa;color:var(--brand-dark)}
@@ -197,11 +200,13 @@ def page(
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{escape(title)} · X MCP</title><style>{_STYLE}</style></head><body>'
+        f'<title>{escape(title)} · X MCP</title>'
+        f'<link rel="icon" type="image/jpeg" href="{LOGO}">'
+        f'<style>{_STYLE}</style></head><body>'
         '<a class="skip-link" href="#main">Skip to content</a>'
         '<header class="site-header"><div class="site-header__inner">'
         f'<a class="brand" href="{BASE}" aria-label="X MCP connections home">'
-        '<span class="brand__mark" aria-hidden="true">X</span>X MCP</a>'
+        f'<span class="brand__mark" aria-hidden="true"><img src="{LOGO}" alt="" width="68" height="68"></span>X MCP</a>'
         f'<nav class="site-nav" aria-label="Connection settings">{nav}</nav>{owner}'
         '</div></header>'
         '<main class="layout" id="main"><div class="hero">'
