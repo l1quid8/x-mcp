@@ -153,6 +153,7 @@ does not install a service or change an existing deployment.
 | `X_MCP_STATE_DIR` | Private SQLite database and staged media |
 | `X_MCP_READER_STATE_DIR` | Reader health and cache state |
 | `X_MCP_READER_INSTANCES` | Optional comma-separated public Nitter mirror URLs |
+| `XP_ENABLE_LIVE_CLEANUP` | Enables execution of reviewed deletion plans; default `false` |
 
 More reader settings and freshness behavior are in [reader notes](docs/READER.md).
 Configured mirror URLs must be public HTTPS hosts; the reader blocks private and
