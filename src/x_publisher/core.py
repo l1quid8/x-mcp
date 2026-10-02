@@ -213,8 +213,9 @@ class Store:
             raise ValueError("Expected a Boolean fallback setting")
         self.set_setting("buffer_direct_fallback_enabled", enabled)
 
-    def save_buffer_channels(self, channels: list[dict]) -> None:
-        """Persist channels verified against the configured Buffer credential."""
+    @staticmethod
+    def validate_buffer_channels(channels: list[dict]) -> list[dict]:
+        """Return safe, canonical channel data without changing saved state."""
         if not isinstance(channels, list):
             raise ValueError("Expected a list of Buffer X channels")
         selected = []
@@ -244,7 +245,11 @@ class Store:
                 saved["x_account_id"] = x_account_id
             selected.append(saved)
             seen.add(account_id)
-        self.set_setting("buffer_channels", selected)
+        return selected
+
+    def save_buffer_channels(self, channels: list[dict]) -> None:
+        """Persist channels verified against the configured Buffer credential."""
+        self.set_setting("buffer_channels", self.validate_buffer_channels(channels))
 
     def buffer_channel(self, account_id: str) -> dict:
         if not isinstance(account_id, str) or not account_id.startswith("buffer:"):

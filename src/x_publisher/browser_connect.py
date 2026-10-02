@@ -1,5 +1,6 @@
-"""Owner-only web onboarding through a disposable browser on the host."""
+"""Owner-only web account settings and legacy disposable-browser routes."""
 import asyncio
+from datetime import datetime, timezone
 import hmac
 import html
 import logging
@@ -16,6 +17,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
 from .auth import callback_key
+from . import connect_ui as ui
 from .core import ORIGIN, PREFIX, Problem
 from .pairing import verify_and_store
 
@@ -23,6 +25,7 @@ BASE = PREFIX + "/connect"
 CLIENT_SETTINGS = BASE + "/client-settings"
 BUFFER_SETTINGS = BASE + "/buffer"
 BUFFER_FALLBACK_SETTINGS = BUFFER_SETTINGS + "/fallback"
+BUFFER_REFRESH = BUFFER_SETTINGS + "/refresh"
 COOKIE = "__Secure-xmcp-connect"
 WORKER = os.environ.get("X_MCP_BROWSER_WORKER_URL", "").rstrip("/")
 VIEW = os.environ.get("X_MCP_BROWSER_VIEW_URL", "").rstrip("/")
@@ -74,67 +77,229 @@ class BrowserConnect:
             except httpx.HTTPError:
                 pass
 
-    async def page(self, request):
-        login = self.login(request)
-        if not login:
-            return HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}</style><h1>Connect X account</h1><p>For an X account already linked in Buffer, use <a href="'''+BUFFER_SETTINGS+'''">Connect through Buffer</a>. For a direct X session on your own server, continue below.</p><form method="post" action="'''+BASE+'''/login"><label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label><button>Continue</button></form></html>''', headers=self.headers())
-        data = self.oauth.get("connect-login", login)
-        csrf = html.escape(data["csrf"], quote=True)
-        rows = list(self.store.db.execute("SELECT id,username FROM accounts WHERE active=1 ORDER BY username"))
-        choices = '<option value="new">New account</option>' + ''.join(
-            '<option value="'+html.escape(row["id"], quote=True)+'">Reconnect @'+html.escape(row["username"])+"</option>" for row in rows)
-        if self.active and time.monotonic() >= self.active["expires"]:
-            self.active = None
-        active = self.active and hmac.compare_digest(self.active["login"], login)
-        if not self.configured():
-            content = '<p>The VPS browser is not configured on this server.</p>'
-        elif active:
-            content = '<p>Sign in to X below. When you see your home feed, select Finish connection.</p><iframe title="X login browser on your server" src="'+BASE+'/view/vnc.html?autoconnect=1&amp;resize=scale&amp;path='+BASE.lstrip('/')+'/ws" style="width:100%;height:650px;border:1px solid #888"></iframe>'
-            content += '<form method="post" action="'+BASE+'/finish"><input type="hidden" name="csrf" value="'+csrf+'"><button>Finish connection</button></form>'
-            content += '<form method="post" action="'+BASE+'/cancel"><input type="hidden" name="csrf" value="'+csrf+'"><button>Cancel</button></form>'
-        elif self.active:
-            content = ('<p>Another X sign-in is in progress in a different browser. '
-                       'You can end that attempt and start again here. The other browser will close without saving its session.</p>'
-                       '<form method="post" action="'+BASE+'/reset"><input type="hidden" name="csrf" value="'+csrf+'">'
-                       '<button>End previous sign-in</button></form>')
-        else:
-            content = '<form method="post" action="'+BASE+'/start"><input type="hidden" name="csrf" value="'+csrf+'"><label>Account <select name="account">'+choices+'</select></label><button>Open X sign-in</button></form>'
-        content += '<p><a href="'+BUFFER_SETTINGS+'">Connect through Buffer</a> using an X account already linked in Buffer.</p>'
-        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:1000px;margin:24px auto;padding:24px}label,button{font:inherit;margin:12px}</style><h1>Connect X account</h1>'+content+'</html>', headers=self.headers())
+    def direct_accounts(self):
+        return list(self.store.db.execute(
+            "SELECT id,username,checked FROM accounts WHERE active=1 ORDER BY username"))
 
-    async def buffer_page(self, request):
+    @staticmethod
+    def checked_label(checked):
+        if not checked:
+            return "Verification date unavailable"
+        return "Identity last verified " + datetime.fromtimestamp(
+            checked, timezone.utc).strftime("%b %d, %Y at %H:%M UTC")
+
+    def buffer_checked_label(self):
+        checked = self.store.setting("buffer_channels_verified_at")
+        if not checked:
+            return "Refresh channels to check the current Buffer connection."
+        return "Channels last checked " + datetime.fromtimestamp(
+            checked, timezone.utc).strftime("%b %d, %Y at %H:%M UTC")
+
+    @staticmethod
+    def channel_label(channel):
+        name = channel.get("display_name") or ""
+        handle = (channel.get("handle") or "").lstrip("@")
+        if name and handle and name.lower().lstrip("@") != handle.lower():
+            return ui.escape(name) + ' <span class="muted small">@' + ui.escape(handle) + "</span>"
+        return ui.escape("@" + handle if handle else name or "X account")
+
+    def channel_list(self, channels, *, accounts=()):
+        if not channels:
+            return '<p>No connected X channels are saved yet.</p>'
+        direct_ids = {row["id"] for row in accounts}
+        items = []
+        for channel in channels:
+            matched = channel.get("x_account_id") in direct_ids
+            suffix = ui.badge("Direct backup saved", "success") if matched else ""
+            items.append('<li><span class="account-name">' + self.channel_label(channel)
+                         + "</span>" + suffix + "</li>")
+        return '<ul class="account-list">' + "".join(items) + "</ul>"
+
+    def direct_list(self, accounts):
+        if not accounts:
+            return '<p>No direct X session is saved.</p>'
+        return '<ul class="account-list">' + "".join(
+            '<li><span><span class="account-name">@' + ui.escape(row["username"])
+            + '</span><br><span class="muted small">' + ui.escape(self.checked_label(row["checked"]))
+            + '</span></span>' + ui.badge("Session saved", "success") + "</li>"
+            for row in accounts) + "</ul>"
+
+    def fallback_form(self, csrf):
+        checked = " checked" if self.store.buffer_direct_fallback_enabled() else ""
+        return ('<form class="stack" method="post" action="' + BUFFER_FALLBACK_SETTINGS + '">'
+                + ui.hidden("csrf", csrf)
+                + '<div class="checkbox"><input id="direct-fallback" type="checkbox" name="enabled" value="1"'
+                + checked + '><label for="direct-fallback">Use a matching direct X session if Buffer reaches its API limit</label></div>'
+                '<p class="hint">Immediate posts only. The X account must match and your MCP client must have permission to use both connections.</p>'
+                '<button class="button button--primary" type="submit">Save backup setting</button></form>')
+
+    def page_document(self, request, *, error=None):
         login = self.login(request)
         if not login:
-            content = ('<p>Connect your X account in Buffer first, then enter your server owner key here.</p>'
-                       '<form method="post" action="'+BASE+'/login"><input type="hidden" name="return_to" value="buffer">'
-                       '<label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label>'
-                       '<button>Continue</button></form>')
+            notice = ui.alert("Could not unlock settings", error, "danger") if error else ""
+            content = ui.card(
+                "Unlock account settings",
+                '<p>Enter the owner key for this self-hosted server to see your connections.</p>'
+                + ui.owner_key_form(), badge_html=ui.badge("Owner access", "info"))
+            return ui.page("X account setup", "Manage the X accounts your MCP server can use.",
+                           '<div class="grid grid--one">' + content + "</div>", notice_html=notice)
+        csrf = self.oauth.get("connect-login", login)["csrf"]
+        channels = self.store.buffer_channels()
+        accounts = self.direct_accounts()
+        fallback = self.store.buffer_direct_fallback_enabled()
+        direct_ids = {a["id"] for a in accounts}
+        matching = any(c.get("x_account_id") in direct_ids for c in channels)
+        if channels:
+            buffer_intro = ('<p>These X channels are saved from Buffer.</p>'
+                            + self.channel_list(channels, accounts=accounts)
+                            + '<p class="hint">' + ui.escape(self.buffer_checked_label()) + '</p>')
+            buffer_badge = ui.badge("Channels saved", "success")
         else:
-            csrf = html.escape(self.oauth.get("connect-login", login)["csrf"], quote=True)
-            channels = self.store.buffer_channels()
-            if channels:
-                listed = '<ul>'+''.join('<li>'+html.escape(c["display_name"] or c["handle"] or c["channel_id"])+
-                                         ' ('+html.escape(c["account_id"])+')</li>' for c in channels)+'</ul>'
-            else:
-                listed = '<p>No Buffer X channel is configured yet.</p>'
-            checked = ' checked' if self.store.buffer_direct_fallback_enabled() else ''
-            content = ('<p>Connect X to Buffer in your own browser, then <a href="https://publish.buffer.com/settings/api">create a Buffer API key</a> and paste it here. '
-                       'The key is encrypted on this server and is never sent to MCP clients. '
-                       'Choose only account-read, posts-read and posts-write permissions for this key.</p>'
-                       +listed+
-                       '<form method="post" action="'+BUFFER_SETTINGS+'"><input type="hidden" name="csrf" value="'+csrf+'">'
-                       '<label>Buffer API key <input type="password" name="api_key" required maxlength="2048" autocomplete="off" style="width:100%;box-sizing:border-box"></label>'
-                       '<button>Connect Buffer X channels</button></form>'
-                       '<h2>Publishing backup</h2><p>When Buffer rejects a post because its API quota is exhausted, '
-                       'use an existing direct X session for the same verified X account. '
-                       'This applies to immediate posts only. Your MCP client must have permission to publish '
-                       'through both routes, and the direct X session must still work.</p>'
-                       '<form method="post" action="'+BUFFER_FALLBACK_SETTINGS+'">'
-                       '<input type="hidden" name="csrf" value="'+csrf+'">'
-                       '<label><input type="checkbox" name="enabled" value="1"'+checked+'>'
-                       ' Use same-account direct X session after Buffer quota rejection</label>'
-                       '<button>Save backup setting</button></form>')
-        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect through Buffer</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}label{display:block;margin:20px 0}</style><h1>Connect through Buffer</h1>'+content+'</html>', headers=self.headers())
+            buffer_intro = '<p>Connect your X account to Buffer in your own browser, then add your Buffer API key here.</p>'
+            buffer_badge = ui.badge("Set up Buffer", "warning")
+        buffer_card = ui.card(
+            "Buffer publishing", buffer_intro, badge_html=buffer_badge,
+            actions_html='<a class="button button--primary" href="' + BUFFER_SETTINGS
+                         + '">Manage Buffer</a>')
+        direct_intro = self.direct_list(accounts)
+        if accounts:
+            direct_intro += ('<p class="hint">A saved session may expire or be rejected by X. '
+                             'The extension is needed when you connect or reconnect an account, not while publishing.</p>')
+        else:
+            direct_intro += ('<p class="hint">For direct publishing or a Buffer quota backup, connect a session '
+                             'from the X account signed in on your local computer.</p>')
+        direct_intro += ('<p><a href="https://github.com/l1quid8/x-mcp/blob/main/browser-extension/README.md">'
+                         'How to connect with the browser extension</a></p>')
+        if fallback and matching:
+            direct_badge = ui.badge("Backup enabled", "success")
+        elif fallback:
+            direct_badge = ui.badge("Needs matching account", "warning")
+        else:
+            direct_badge = ui.badge("Backup off", "neutral")
+        direct_card = ui.card("Direct X session", direct_intro, badge_html=direct_badge,
+                              actions_html=self.fallback_form(csrf))
+        notice = ui.alert("Could not unlock settings", error, "danger") if error else ""
+        return ui.page("X account setup", "Manage publishing connections on your self-hosted server.",
+                       '<div class="grid">' + buffer_card + direct_card + "</div>",
+                       signed_in=True, notice_html=notice)
+
+    async def page(self, request):
+        return HTMLResponse(self.page_document(request), headers=self.headers())
+
+    def buffer_document(self, request, *, error=None, open_key=False):
+        login = self.login(request)
+        if not login:
+            notice = ui.alert("Could not unlock settings", error, "danger") if error else ""
+            content = ui.card("Unlock Buffer settings",
+                              '<p>Enter your server owner key to manage your Buffer connection.</p>'
+                              + ui.owner_key_form(return_to="buffer"))
+            return ui.page("Buffer connection", "Connect X through Buffer and manage its channels.",
+                           '<div class="grid grid--one">' + content + "</div>", active="buffer",
+                           notice_html=notice)
+        csrf = self.oauth.get("connect-login", login)["csrf"]
+        channels = self.store.buffer_channels()
+        key_saved = bool(self.store.buffer_key())
+        accounts = self.direct_accounts()
+        saved = request.query_params.get("saved")
+        if error:
+            notice = ui.alert("Buffer connection needs attention", error, "danger")
+        elif saved == "key":
+            notice = ui.alert("Buffer connected", "Your X channels were verified and saved.", "success")
+        elif saved == "refresh":
+            notice = ui.alert("Channels refreshed", "Your saved X channels now match Buffer's current list.", "success")
+        elif saved == "empty":
+            notice = ui.alert("No X channels found", "Buffer did not return a connected X channel. Check its channel settings and refresh again.", "warning")
+        elif saved == "backup":
+            notice = ui.alert("Backup setting saved", "The new setting will apply to future immediate posts.", "success")
+        else:
+            notice = ""
+        key_form = ('<form class="stack" method="post" action="' + BUFFER_SETTINGS + '">'
+                    + ui.hidden("csrf", csrf)
+                    + '<div class="field"><label for="buffer-key">Buffer API key</label>'
+                      '<input id="buffer-key" type="password" name="api_key" required maxlength="2048" autocomplete="off" spellcheck="false">'
+                      '<p class="field__help">Saved encrypted on this server. It is never sent to MCP clients.</p></div>'
+                      '<button class="button button--primary" type="submit">Verify and save key</button></form>')
+        instructions = ('<ol class="steps"><li><a href="https://account.buffer.com/channels">Connect your X account in Buffer</a> '
+                        'using your own browser.</li><li><a href="https://publish.buffer.com/settings/api">Create a Buffer API key</a> '
+                        'with account read, posts read, and posts write permissions.</li><li>Paste the key below. '
+                        'Your server checks and saves its available X channels.</li></ol>')
+        if key_saved:
+            setup = (instructions + ('<details open>' if open_key else '<details>')
+                     + '<summary>Replace API key</summary>' + key_form + '</details>')
+        else:
+            setup = instructions + key_form
+        setup_card = ui.card("Buffer API key", setup,
+                             badge_html=ui.badge("Key saved", "success") if key_saved else ui.badge("Add key", "warning"))
+        if channels:
+            refresh_form = ('<form method="post" action="' + BUFFER_REFRESH + '">'
+                            + ui.hidden("csrf", csrf)
+                            + '<button type="submit">Refresh channels</button></form>')
+            channel_body = ('<p>These are the X channels saved with your Buffer key.</p>'
+                            + self.channel_list(channels, accounts=accounts)
+                            + '<p class="hint">' + ui.escape(self.buffer_checked_label()) + '</p>')
+            channel_badge = ui.badge(str(len(channels)) + " saved", "success")
+        else:
+            refresh_form = ('<form method="post" action="' + BUFFER_REFRESH + '">'
+                            + ui.hidden("csrf", csrf)
+                            + '<button type="submit">Refresh channels</button></form>') if key_saved else ""
+            channel_body = '<p>No connected X channels are saved yet. Connect one in Buffer, then refresh here.</p>'
+            channel_badge = ui.badge("No channels", "warning")
+        channels_card = ui.card("X channels", channel_body, badge_html=channel_badge,
+                                actions_html=refresh_form)
+        direct = self.direct_list(accounts)
+        backup_body = ('<p>For an immediate post, a definite Buffer API quota rejection can use a saved direct X session '
+                       'for the same verified X account. Other errors will stop to avoid duplicate posts.</p>'
+                       + direct
+                       + '<p><a href="https://github.com/l1quid8/x-mcp/blob/main/browser-extension/README.md">'
+                         'Connect or reconnect a direct X session from your local browser</a></p>'
+                       + self.fallback_form(csrf))
+        matched = any(c.get("x_account_id") in {a["id"] for a in accounts} for c in channels)
+        if self.store.buffer_direct_fallback_enabled() and matched:
+            backup_badge = ui.badge("On", "success")
+        elif self.store.buffer_direct_fallback_enabled():
+            backup_badge = ui.badge("Needs matching account", "warning")
+        else:
+            backup_badge = ui.badge("Off", "neutral")
+        backup_card = ui.card("Direct X backup", backup_body,
+                              badge_html=backup_badge)
+        return ui.page("Buffer connection", "Manage your key, X channels, and optional publishing backup.",
+                       '<div class="grid">' + setup_card + channels_card + '</div>'
+                       '<div class="grid grid--one section-heading">' + backup_card + '</div>',
+                       active="buffer", signed_in=True, notice_html=notice)
+
+    async def buffer_page(self, request, *, error=None, status_code=200, open_key=False):
+        return HTMLResponse(self.buffer_document(request, error=error, open_key=open_key), status_code=status_code,
+                            headers=self.headers())
+
+    @staticmethod
+    def usable_buffer_channels(found):
+        if not isinstance(found, list):
+            raise ValueError("Invalid Buffer channel list")
+        channels = []
+        for channel in found:
+            if not isinstance(channel, dict):
+                raise ValueError("Invalid Buffer channel")
+            if (channel.get("service") not in {"twitter", "x"}
+                    or channel.get("isDisconnected") or channel.get("isLocked")):
+                continue
+            channel_id = channel.get("id")
+            if not isinstance(channel_id, str) or not channel_id:
+                raise ValueError("Invalid Buffer channel")
+            saved = {"account_id": "buffer:" + channel_id, "channel_id": channel_id,
+                     "display_name": channel.get("name") or "", "handle": channel.get("username") or ""}
+            if channel.get("x_account_id"):
+                saved["x_account_id"] = channel["x_account_id"]
+            channels.append(saved)
+        return channels
+
+    async def list_buffer_channels(self, key):
+        from .buffer_api import BufferAPI
+        api = BufferAPI(key)
+        try:
+            return self.store.validate_buffer_channels(
+                self.usable_buffer_channels(await api.list_channels()))
+        finally:
+            await api.close()
 
     async def buffer_save(self, request):
         login = self.login(request)
@@ -149,31 +314,43 @@ class BrowserConnect:
             return JSONResponse({"error": "invalid_csrf"}, status_code=403, headers=self.headers())
         key = form.get("api_key", "").strip()
         if not 16 <= len(key) <= 2048 or any(c.isspace() for c in key):
-            return HTMLResponse("Invalid Buffer API key format.", status_code=400, headers=self.headers())
-        from .buffer_api import BufferAPI
-        api = BufferAPI(key)
+            return await self.buffer_page(request, error="Check the API key format and try again.",
+                                          status_code=400, open_key=True)
         try:
-            found = await api.list_channels()
+            channels = await self.list_buffer_channels(key)
         except Exception:
-            return HTMLResponse("Buffer could not verify this key or list its X channels. Check the key permissions and try again.",
-                                status_code=400, headers=self.headers())
-        finally:
-            await api.close()
-        channels = []
-        for c in found:
-            if (c.get("service") not in {"twitter", "x"}
-                    or c.get("isDisconnected") or c.get("isLocked")):
-                continue
-            channel = {"account_id": "buffer:"+c["id"], "channel_id": c["id"],
-                       "display_name": c.get("name") or "", "handle": c.get("username") or ""}
-            if c.get("x_account_id"):
-                channel["x_account_id"] = c["x_account_id"]
-            channels.append(channel)
+            return await self.buffer_page(request, error="Buffer could not verify this key or list its X channels. Check the key permissions and try again.",
+                                          status_code=400, open_key=True)
         if not channels:
-            return HTMLResponse("Buffer returned no connected X channels for this key.", status_code=400, headers=self.headers())
+            return await self.buffer_page(request, error="Buffer returned no connected X channels for this key. Connect X in Buffer first, then try again.",
+                                          status_code=400, open_key=True)
         self.store.save_buffer_key(key)
         self.store.save_buffer_channels(channels)
-        return RedirectResponse(BUFFER_SETTINGS, status_code=303, headers=self.headers())
+        self.store.set_setting("buffer_channels_verified_at", time.time())
+        return RedirectResponse(BUFFER_SETTINGS + "?saved=key", status_code=303, headers=self.headers())
+
+    async def buffer_refresh(self, request):
+        login = self.login(request)
+        if not login or request.headers.get("origin") != ORIGIN:
+            return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
+        try:
+            form = await self.form(request)
+        except ValueError:
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers())
+        data = self.oauth.get("connect-login", login)
+        if not hmac.compare_digest(form.get("csrf", ""), data["csrf"]):
+            return JSONResponse({"error": "invalid_csrf"}, status_code=403, headers=self.headers())
+        key = self.store.buffer_key()
+        if not key:
+            return await self.buffer_page(request, error="Add a Buffer API key before refreshing channels.", status_code=400)
+        try:
+            channels = await self.list_buffer_channels(key)
+            self.store.save_buffer_channels(channels)
+            self.store.set_setting("buffer_channels_verified_at", time.time())
+        except Exception:
+            return await self.buffer_page(request, error="Could not refresh channels from Buffer. Your saved channels were not changed. Try again later.", status_code=502)
+        return RedirectResponse(BUFFER_SETTINGS + ("?saved=refresh" if channels else "?saved=empty"),
+                                status_code=303, headers=self.headers())
 
     async def buffer_fallback_save(self, request):
         login = self.login(request)
@@ -189,23 +366,37 @@ class BrowserConnect:
         if form.get("enabled", "") not in {"", "1"}:
             return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers())
         self.store.set_buffer_direct_fallback_enabled(form.get("enabled") == "1")
-        return RedirectResponse(BUFFER_SETTINGS, status_code=303, headers=self.headers())
+        return RedirectResponse(BUFFER_SETTINGS + "?saved=backup", status_code=303, headers=self.headers())
 
-    async def client_settings(self, request):
+    def client_document(self, request, *, error=None, success=False):
         login = self.login(request)
         if not login:
-            content = ('<p>Enter your server owner key to manage MCP client callbacks.</p>'
-                       '<form method="post" action="'+BASE+'/login"><input type="hidden" name="return_to" value="client-settings">'
-                       '<label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label>'
-                       '<button>Continue</button></form>')
+            content = ui.card("Unlock MCP client settings",
+                              '<p>Enter your owner key to manage callback URLs for MCP clients.</p>'
+                              + ui.owner_key_form(return_to="client-settings"))
         else:
-            csrf = html.escape(self.oauth.get("connect-login", login)["csrf"], quote=True)
-            content = ('<p>Use this only when Codex or ChatGPT says its callback URL is not allowed. '
-                       'The callback returns you to that MCP client after you approve access; it does not connect an X account.</p>'
-                       '<form method="post" action="'+BASE+'/callback"><input type="hidden" name="csrf" value="'+csrf+'">'
-                       '<label>Exact client callback URL <input type="url" name="callback" required style="display:block;width:100%;box-sizing:border-box"></label>'
-                       '<button>Allow callback</button></form>')
-        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP client settings</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}label{display:block;margin:20px 0}</style><h1>MCP client settings</h1>'+content+'</html>', headers=self.headers())
+            csrf = self.oauth.get("connect-login", login)["csrf"]
+            content = ui.card(
+                "Allow an MCP client callback",
+                '<p>Use this only if your MCP client says its callback URL is blocked. '
+                'This setting returns you to the client after you approve access; it does not connect an X account.</p>'
+                '<form class="stack" method="post" action="' + BASE + '/callback">'
+                + ui.hidden("csrf", csrf)
+                + '<div class="field"><label for="callback-url">Exact client callback URL</label>'
+                  '<input id="callback-url" type="url" name="callback" required></div>'
+                  '<button class="button button--primary" type="submit">Allow callback</button></form>')
+        if error:
+            notice = ui.alert("Callback was not saved", error, "danger")
+        elif success:
+            notice = ui.alert("Callback allowed", "Retry the MCP client connection, then approve its accounts and permissions.", "success")
+        else:
+            notice = ""
+        return ui.page("MCP client settings", "Approve a callback URL only when your MCP client asks for one.",
+                       '<div class="grid grid--one">' + content + "</div>", active="clients",
+                       signed_in=bool(login), notice_html=notice)
+
+    async def client_settings(self, request):
+        return HTMLResponse(self.client_document(request), headers=self.headers())
 
     async def authorize(self, request):
         if request.headers.get("origin") != ORIGIN:
@@ -217,7 +408,14 @@ class BrowserConnect:
             supplied = ""
             form = {}
         if not hmac.compare_digest(supplied.encode(), self.oauth.owner_key.encode()):
-            return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
+            destination = form.get("return_to", "")
+            if destination == "buffer":
+                body = self.buffer_document(request, error="That owner key was not accepted. Check it and try again.")
+            elif destination == "client-settings":
+                body = self.client_document(request, error="That owner key was not accepted. Check it and try again.")
+            else:
+                body = self.page_document(request, error="That owner key was not accepted. Check it and try again.")
+            return HTMLResponse(body, status_code=403, headers=self.headers())
         login, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         self.oauth.put("connect-login", login, {"csrf": csrf}, 900)
         destination = (CLIENT_SETTINGS if form.get("return_to") == "client-settings" else
@@ -243,10 +441,10 @@ class BrowserConnect:
         if action == "callback":
             callback = callback_key(form.get("callback", ""))
             if callback is None:
-                return HTMLResponse("Only an exact ChatGPT HTTPS callback or Codex 127.0.0.1 callback path is supported.", status_code=400, headers=self.headers())
+                return HTMLResponse(self.client_document(request, error="Use the exact ChatGPT HTTPS callback or Codex 127.0.0.1 callback URL shown by your client."), status_code=400, headers=self.headers())
             allowed = self.store.setting("callbacks", [])
             self.store.set_setting("callbacks", sorted(set(allowed + [callback])))
-            return HTMLResponse("<h1>Callback allowed</h1><p>Retry the MCP client connection. You will approve its accounts and permissions on the consent page.</p>", headers=self.headers())
+            return HTMLResponse(self.client_document(request, success=True), headers=self.headers())
         async with self.lock:
             if self.active and time.monotonic() >= self.active["expires"]:
                 self.active = None
@@ -371,6 +569,7 @@ def browser_connect_routes(flow):
             Route(CLIENT_SETTINGS, flow.client_settings, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_page, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_save, methods=["POST"]),
+            Route(BUFFER_REFRESH, flow.buffer_refresh, methods=["POST"]),
             Route(BUFFER_FALLBACK_SETTINGS, flow.buffer_fallback_save, methods=["POST"]),
             Route(BASE+"/login", flow.authorize, methods=["POST"]),
             Route(BASE+"/{action}", flow.action, methods=["POST"]),

@@ -39,7 +39,7 @@ text, search results, and cleanup reasons are treated as untrusted data.
 
 ## Requirements
 
-- Docker with Compose for the browser-only setup, or Python 3.11+ and
+- Docker with Compose for a self-hosted setup, or Python 3.11+ and
   [uv](https://docs.astral.sh/uv/) for a manual installation.
 - Your own HTTPS hostname and reverse proxy. The Python server listens only on
   `127.0.0.1:8770` by default; the proxy must forward your chosen path prefix.
@@ -58,9 +58,10 @@ and account helpers refuse to start without `X_MCP_ORIGIN`.
 
 ### Self-hosted setup with Docker Compose
 
-This runs X MCP and a disposable browser service on your VPS. Buffer publishing
-uses your normal browser to connect X to Buffer; it does not use the disposable
-VPS browser or require a browser extension on your computer.
+This runs X MCP and its private support services on your VPS. The owner
+dashboard uses your normal browser. Buffer publishing does not require the
+browser extension. The recommended direct X connection method uses the
+extension for direct publishing, cleanup, or the optional fallback.
 
 ```sh
 git clone https://github.com/l1quid8/x-mcp.git
@@ -71,27 +72,25 @@ docker compose exec app cat /var/lib/x-mcp/keys/owner-key
 ```
 
 Save the owner key privately. The setup command creates a private `.env` with a
-random browser-worker token; both files are excluded from Git. Compose stores
-encrypted sessions and keys in a persistent private volume. The only published
-container port is `127.0.0.1:8770`; place your own HTTPS reverse proxy in front
-of it. Forward `/x-mcp/*` and the OAuth discovery paths under
+random browser-worker token; both files are excluded from Git. Compose still
+includes a private browser worker for compatibility, but the owner dashboard
+does not offer VPS browser sign-in. Compose stores encrypted sessions and keys
+in a persistent private volume. The only published container port is
+`127.0.0.1:8770`; place your own HTTPS reverse proxy in front of it. Forward
+`/x-mcp/*` and the OAuth discovery paths under
 `/.well-known/oauth-authorization-server/x-mcp/*` and
-`/.well-known/oauth-protected-resource/x-mcp/*`. The browser stream at
-`/x-mcp/connect/ws` requires WebSocket upgrade forwarding. Do not publish the
-browser service's ports. See [browser connection details](docs/BROWSER_CONNECT.md)
-for a proxy example and troubleshooting.
+`/.well-known/oauth-protected-resource/x-mcp/*`. Do not publish the browser
+service's ports. See [owner connection details](docs/BROWSER_CONNECT.md) for a
+proxy example.
 
 For Buffer publishing, connect X at [Buffer's channel settings](https://account.buffer.com/channels),
-then open `https://mcp.your-domain.com/x-mcp/connect/buffer` on your own
-computer. Enter your server owner key and a Buffer API key. The server checks
-which X channels that key can use and stores the key encrypted. No X password
-or website cookies pass through X MCP. [Buffer offers API access on its Free
+then open `https://mcp.your-domain.com/x-mcp/connect` on your own computer.
+Enter your server owner key, choose **Manage Buffer**, and save a Buffer API
+key. The server checks which X channels that key can use and stores the key
+encrypted. This Buffer setup does not pass an X password or website cookies
+through X MCP. [Buffer offers API access on its Free
 plan](https://buffer.com/pricing), subject to its channel, queue, and request
 limits. Each self-hosted deployment needs its own Buffer account and key.
-
-The older direct-session route remains at `/x-mcp/connect`. It signs in to X
-inside a temporary browser on your VPS. X may refuse that login; Buffer does
-not depend on it.
 
 ### Manual Python service
 
@@ -161,14 +160,23 @@ loopback targets to prevent server-side request forgery.
 
 ## Connect an account
 
+Open `https://mcp.your-domain.com/x-mcp/connect` in your own browser and sign
+in with the server owner key. This is the owner dashboard: it shows your Buffer
+channels and saved direct X sessions in one place. **Manage Buffer** opens the
+Buffer setup page. A direct X session is optional, and the dashboard does not
+offer VPS browser sign-in.
+
 ### Buffer publishing
 
 Create a personal key in [Buffer Settings → API](https://publish.buffer.com/settings/api).
 Select `accountRead`, `postsRead`, and `postsWrite` permissions; leave unrelated
-permissions off. Keep the key private. Open `/x-mcp/connect/buffer` on your own
-server to save it after entering your owner key. The page lists the usable X
-channels verified by Buffer. Connecting one does not grant an MCP client
-permission to publish; approve that channel and `buffer:publish` separately in
+permissions off. Keep the key private. From the owner dashboard, select
+**Manage Buffer** and **Verify and save key**. Once saved, the page lists the
+usable X channels verified by Buffer. Use **Refresh channels** after changing
+which X account is connected inside Buffer. The API key field stays collapsed
+under **Replace API key** unless you need to change it. Connecting a channel
+does not grant an MCP client permission to publish; approve that channel and
+`buffer:publish` separately in
 the MCP consent page. For manual server administration, a root-only
 `x-mcp-admin configure-buffer --file /path/to/private-key-file` command is
 available; the input file must be mode `0600`.
@@ -183,15 +191,18 @@ cleanup API.
 
 #### Optional direct X fallback
 
-The server owner can enable **direct X fallback** on the Buffer connection page.
+The server owner can enable **Use a matching direct X session if Buffer reaches
+its API limit** on the Buffer connection page. This backup uses an optional
+direct X session already connected to the server; the extension is needed only
+when connecting or renewing that session, not while posts are being sent.
 Buffer's verified X account ID must match the numeric ID of a connected direct
 X session. The MCP client must be granted `buffer:publish` for the Buffer channel
 and `publisher:publish` for that direct X account. Image posts also require
 `publisher:media`. An existing Buffer-only grant does not gain direct-session
 access; reconnect the MCP client and approve both accounts and permissions.
-If you reconnect a channel to a different X account inside Buffer, refresh its
-channel list by re-entering the key on the owner page or running
-`x-mcp-admin sync-buffer-channels` before relying on fallback. A Buffer key or
+If you reconnect a channel to a different X account inside Buffer, use
+**Refresh channels** on the owner page or run `x-mcp-admin sync-buffer-channels`
+before relying on fallback. A Buffer key or
 verified account change invalidates existing post previews.
 
 For `shareNow` posts, a definite Buffer API quota rejection (HTTP 429 or its
@@ -204,26 +215,23 @@ private staging, with a 5 MiB cap per image, before direct publication. The
 operation receipt names the provider and gives the direct X post result.
 [Buffer documents its API limits and 429 response](https://developers.buffer.com/guides/api-limits.html).
 
-### Direct X session and cleanup
+### Optional direct X session and cleanup
 
-The direct-session method starts a fresh X
-login on your server. Select **New account** or an existing account to reconnect,
-complete X sign-in, and choose **Finish connection**. This does not publish a
-post or grant an MCP client access to the account. Existing MCP clients need a
-new account grant before they can use newly connected accounts.
-
-The browser extension and local helper remain optional alternatives for a
-manual Python deployment that has no browser worker. The extension can reuse
-the X session in an already signed-in local browser; the local helper opens a
-new browser on the user's computer.
+For direct publishing, session-based cleanup, or the Buffer API-limit fallback,
+connect a direct X session using the extension in the browser profile where
+you are already signed in to X. The extension transfers selected session
+cookies to your own server after one-time owner approval. It does not need to
+stay active for publishing. If X expires or rejects the saved session, connect
+it again. No direct X session is needed for Buffer-only publishing.
 
 The [browser extension template](browser-extension/README.md) can be generated
 for your exact server origin, then loaded as an unpacked Brave/Chromium
 extension. Enter the X handle signed into that browser profile, approve the
 one-time code with your server's owner key, and wait for server-side identity
 verification. The checked-in template points only to an invalid example domain
-and cannot send a session to a real server. The optional
-[local account helper](connect/README.md) also requires your configured origin.
+and cannot send a session to a real server. An optional
+[local account helper](connect/README.md) is also available to operators who
+prefer a separate local browser session; it requires your configured origin.
 
 Connecting an account stores its X session encrypted on your server; it does
 not publish a post or grant an MCP client permission to use that account. Use

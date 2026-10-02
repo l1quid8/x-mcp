@@ -1,37 +1,32 @@
-# Browser-only account connection
+# Owner connection dashboard
 
-X MCP's `/x-mcp/connect` page lets the server owner connect an X account from
-any normal browser. The X browser itself runs on the self-hosted VPS. The owner
-signs in there, then X MCP verifies the account and stores only the selected X
-session cookies in its encrypted private database. The temporary browser closes
-after connection, cancellation, or 15 minutes. No browser extension or local
-helper is needed on the owner's computer.
+Each self-hosted X MCP server has an owner dashboard at
+`https://YOUR-ORIGIN/x-mcp/connect` (replace `/x-mcp` if you set a custom
+`X_MCP_PREFIX`). Open it in your normal browser and enter the server owner
+key. The dashboard shows Buffer channels and saved direct X sessions. It does
+not present a VPS browser sign-in.
 
-This is session authentication for publishing through Twikit, not official X
-OAuth. MCP client authorization remains a separate browser-based OAuth grant.
-An existing MCP client grant does not acquire a newly connected account.
+Buffer and direct X sessions serve different needs:
 
-## Deployment
+- **Buffer:** connect an X channel inside Buffer, then give X MCP a Buffer API
+  key. This is enough for Buffer publishing; no X session import is required.
+- **Optional direct X session:** connect from a Brave/Chromium profile already
+  signed in to X using the local browser extension. The saved session supports
+  direct publishing, session-based cleanup, and the same-account fallback when
+  Buffer definitely reaches its API request limit.
 
-Use the repository's `docker/configure.py` and `compose.yaml` for new installs.
-The app container stores keys and state in the `x_mcp_private` volume. The
-browser container has no published port, no access to that volume, and a
-temporary filesystem. Both services must use the same random
-`X_MCP_BROWSER_WORKER_TOKEN` from the private `.env` file.
+Connecting either route does not give an MCP client permission to use it. The
+client must receive the account and scope grants described below.
 
-The HTTPS proxy must forward the MCP path, OAuth discovery paths, and WebSocket
-upgrades. With the default path prefix, a minimal Nginx example is:
+## Self-hosted deployment
+
+Follow the [installation steps](../README.md#install-and-configure) first.
+Use your own HTTPS hostname and set `X_MCP_ORIGIN` to that origin with no path.
+The reverse proxy must forward the configured MCP prefix and OAuth discovery
+paths to the loopback app listener. For the default prefix, a minimal Nginx
+example is:
 
 ```nginx
-location = /x-mcp/connect/ws {
-    proxy_pass http://127.0.0.1:8770;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 900s;
-    access_log off;
-}
 location /x-mcp/ {
     proxy_pass http://127.0.0.1:8770;
     proxy_http_version 1.1;
@@ -53,35 +48,66 @@ location ^~ /.well-known/oauth-protected-resource/x-mcp/ {
 }
 ```
 
-The proxy must have a valid HTTPS certificate for `X_MCP_ORIGIN`. Keep the
-Python port bound to loopback and do not route the browser worker's internal
-ports to the public internet. If using a manual Python service instead of
-Compose, set `X_MCP_BROWSER_WORKER_URL`, `X_MCP_BROWSER_VIEW_URL`, and a shared
-random `X_MCP_BROWSER_WORKER_TOKEN` in that service; run the browser worker on
-a private network or bind its ports to loopback only.
+The proxy needs a valid HTTPS certificate for `X_MCP_ORIGIN`. Keep the Python
+listener on loopback. Docker Compose still runs a private browser worker for
+compatibility. It has no published port or access to the app's persistent
+private volume, uses a temporary filesystem, and shares a random token with
+the app from the private `.env` file. It is not part of the recommended
+account connection flow. Do not expose its internal ports.
 
-## What the owner sees
+## Connect Buffer
 
-1. Open `https://YOUR-ORIGIN/x-mcp/connect` on the local computer.
-2. Enter the X MCP owner key. The page shows existing connected accounts.
-3. Choose **New account** or an account to reconnect, then **Open X sign-in**.
-4. Sign in to X in the browser view. Complete any X verification there.
-5. After the X home feed appears, choose **Finish connection**. X MCP checks
-   the authenticated account ID before storing the encrypted session.
-6. Connect the MCP client and approve that account on the separate MCP consent
-   page. If the client says its callback is not allowed, open
-   `/x-mcp/connect/client-settings`, enter the owner key, and allow the exact
-   callback URL shown by the client. Then retry. Publishing uses the saved
-   session; the temporary browser can close.
+1. In your own browser, [connect X to Buffer](https://account.buffer.com/channels).
+2. Create a key in [Buffer Settings → API](https://publish.buffer.com/settings/api)
+   with `accountRead`, `postsRead`, and `postsWrite` only.
+3. Open the X MCP owner dashboard, select **Manage Buffer**, and choose
+   **Verify and save key**. X MCP verifies the key, lists usable X channels,
+   and stores the key encrypted on your server. No X password or X website
+   cookies pass through this Buffer setup.
+4. If you reconnect a Buffer channel to a different X account, select
+   **Refresh channels** before posting. Use the collapsed **Replace API key**
+   section only when the key itself changes.
 
-If another browser still owns a sign-in attempt, choose **End previous sign-in**
-on the connection page to close that temporary browser, then start again.
+The Buffer page also has an optional backup switch: **Use a matching direct X
+session if Buffer reaches its API limit**. It applies only to immediate
+(`shareNow`) posts after a definite Buffer API quota rejection. A direct X
+session for the *same verified numeric X account ID* must already be saved.
+Queued or scheduled posts, Buffer posting limits, timeouts, server errors, and
+unclear outcomes do not use this fallback. See the
+[full fallback rules](../README.md#optional-direct-x-fallback).
 
-If X rejects login from the VPS or requires a passkey stored only on the local
-computer, use another X verification method or the optional local connection
-helper. Repeated login attempts can trigger X account restrictions, so resolve
-the challenge in X before retrying. The browser service opens X's login page;
-X MCP does not ask for the X password in its own form.
+## Connect an optional direct X session
 
-The current server is single-owner. Do not share its owner key with other
-people or present this flow as a multi-user hosted service.
+Use the [browser extension instructions](../browser-extension/README.md) to
+generate an extension pinned to your own HTTPS origin and, if needed, custom
+path prefix. Load the generated extension into the Brave/Chromium profile
+where you are already signed in to X. Select the account, approve its one-time
+code using your server owner key, and wait for X MCP to verify the X account
+identity before saving the selected session cookies encrypted on your server.
+The extension is needed only to connect or renew the session; it does not need
+to remain active for normal publishing. X can expire or restrict that session,
+so reconnect it if a publication receipt reports that it no longer works.
+
+This direct session is website-session authentication through Twikit, not
+official X OAuth. The checked-in extension template points to an invalid
+example domain and cannot send a session to a real server. Generate a private
+copy for your deployment and keep your owner key and session material out of
+the repository.
+
+## Grant an MCP client access
+
+After connecting accounts, approve each client and the accounts and scopes it
+needs. Buffer publishing requires `buffer:publish` for the selected
+`buffer:<channel_id>`. Direct publishing requires `publisher:publish` for the
+matching numeric X account ID; direct image publishing also requires
+`publisher:media`. The optional fallback requires **both** routes to be
+granted. An existing Buffer-only grant does not gain direct-session access,
+and a newly connected account does not appear in an existing grant
+automatically. Reconnect the MCP client and approve the new access.
+
+If Codex or ChatGPT reports that its callback is not allowed, use the separate
+owner-only `/x-mcp/connect/client-settings` page to allow the exact callback
+URL shown by that client, then retry. Callback approval is for MCP client
+authorization; it does not connect an X account. The current server is
+single-owner. Do not share its owner key or present this as a multi-user hosted
+service.
