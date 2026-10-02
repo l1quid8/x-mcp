@@ -34,6 +34,7 @@ from .pairing import SessionImporter
 from .pairing_web import browser_pairing_routes
 from .browser_connect import BrowserConnect, browser_connect_routes
 from .extension_origin import ExtensionCORS
+from .mcp_origin import CHATGPT_ORIGIN, ChatGPTMcpCORS
 from .cleanup import Cleanup
 from .cleanup_models import ProposedAction, ProtectionPolicy
 from .x_api import CALLBACK, XAPIError
@@ -400,7 +401,7 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
         json_response=True, max_request_body_size=1024*1024,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
             allowed_hosts=list({public_host, "127.0.0.1:8769", f"127.0.0.1:{bind_port}"}),
-            allowed_origins=[ORIGIN]))
+            allowed_origins=[ORIGIN, CHATGPT_ORIGIN]))
 
     async def uploads(request):
         try:
@@ -457,6 +458,7 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
     browser_connect = BrowserConnect(oauth, store, backend_factory, publisher.account_locks)
     app = Starlette(routes=[Route(PREFIX+"/session-import", importer.__call__, methods=["POST"]),
         Route(PREFIX+"/x-oauth/callback", x_oauth_callback, methods=["GET"])] + browser_connect_routes(browser_connect) + browser_pairing_routes(oauth) + oauth_routes(oauth)+[Mount("/", Authentication(private, store, oauth))], lifespan=lifespan)
+    app.add_middleware(ChatGPTMcpCORS)
     app.add_middleware(ExtensionCORS)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlsplit(ORIGIN).hostname, "127.0.0.1"])
     app.state.store, app.state.publisher, app.state.media, app.state.oauth = store, publisher, media, oauth
