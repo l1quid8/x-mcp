@@ -51,7 +51,7 @@ class Candidate(StrictModel):
     author: dict | None = None
     url: str | None = None
     observed_at: float
-    source: Literal["x_api_v2", "x_session", "owner_browser_observation", "public_x_embed"] = "x_api_v2"
+    source: Literal["x_api_v2", "x_session", "owner_browser_observation", "public_x_embed", "publication_receipt"] = "x_api_v2"
 
 
 class ProposedAction(StrictModel):

@@ -87,6 +87,36 @@ def adapter(store, graph, identity='1'):
     return SessionCleanup(store, '1', lambda cookies: backend)
 
 
+@pytest.mark.parametrize('verified', [True, False])
+async def test_receipt_deletion_needs_no_scan_and_rejects_unverified_receipts(setup, verified):
+    store = setup[0].store
+    graph = Graph()
+    payload = canonical({'posts': [{'text': 'test'}]})
+    result = canonical({'posts': [{'id': '100', 'verified': verified}]})
+    with store.db:
+        store.db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('receipt-op', '1', 'receipt-key', 'hash', payload, 'succeeded', result, 'done', time.time(), time.time()))
+    async def broken_scan(*args):
+        raise AssertionError('receipt deletion must not scan')
+    graph.user_tweets = broken_scan
+    async def factory(account):
+        return adapter(store, graph)
+    cleanup = Cleanup(store, factory, live_enabled=True)
+    if not verified:
+        with pytest.raises(Problem, match='No verified publication receipt'):
+            await cleanup.preview_post_deletion('1', '100')
+        assert graph.calls == []
+        return
+    with pytest.raises(Problem, match='No verified publication receipt'):
+        await cleanup.preview_post_deletion('1', '999')
+    plan = await cleanup.preview_post_deletion('1', '100')
+    assert plan['total_actions'] == 1 and graph.calls == []
+    assert plan['items'][0]['candidate']['source'] == 'publication_receipt'
+    result = await cleanup.execute('1', plan['plan_id'], 'receipt-live-key', False, 1, client_authorized=True)
+    assert result['progress']['succeeded'] == 1
+    assert graph.calls == ['100'] and '200' in graph.posts
+
+
 async def test_session_scan_preserves_provenance_and_latest_order(setup):
     store = setup[0].store
     graph = Graph()

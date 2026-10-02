@@ -318,3 +318,15 @@ class SessionCleanup:
                 'data': {'delete_acknowledged': True}, 'confirmed_by': 'delete_acknowledgment_only',
                 'requires_owner_verification': True, 'operation_query_id': DELETE_TWEET_QUERY_ID,
                 'rate_limit': self.rate}
+
+    async def execute_receipt_verified(self, account, target):
+        """Cleanup verifies its persisted publication receipt before calling this adapter."""
+        receipt = await self.execute_browser_verified(account, 'DELETE_POST', target)
+        try:
+            await self.lookup({'content_type': 'POST', 'content_id': target})
+        except XAPIError as exc:
+            if exc.code == 'x_not_found':
+                return {**receipt, 'data': {'deleted': True},
+                        'confirmed_by': 'delete_acknowledgment_and_readback',
+                        'requires_owner_verification': False}
+        return receipt

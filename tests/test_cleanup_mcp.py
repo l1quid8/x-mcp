@@ -134,6 +134,11 @@ async def test_authenticated_live_request_executes_exact_plan_without_admin_step
         scan = (await call("scan_content", {"account_id": "1"}))["structuredContent"]
         candidate = next(c for c in scan["candidates"] if c["content_id"] == "10")
         plan = (await call("preview_deletion_plan", {"account_id": "1", "proposed_actions": [{"candidate_id": candidate["candidate_id"], "action": "DELETE_POST"}]}))["structuredContent"]
+        assert plan["client_execution_authorized"] and plan["execution_ready"]
+        preview_token = store.issue_token("preview-only", ["cleanup:plan"], ["1"])
+        limited = (await call("preview_deletion_plan", {"account_id": "1", "proposed_actions": [{"candidate_id": candidate["candidate_id"], "action": "DELETE_POST"}]}, preview_token))["structuredContent"]
+        assert limited["live_execution_enabled"] and not limited["client_execution_authorized"]
+        assert not limited["execution_ready"] and limited["required_execution_scope"] == "cleanup:execute"
         args = {"account_id": "1", "plan_id": plan["plan_id"], "idempotency_key": "explicit-live-request", "dry_run": False, "max_actions": 1}
         for credential, expected_error in [(read_token, "insufficient_scope"), (foreign_token, "account_not_authorized")]:
             denied = await call("execute_deletion_plan", args, credential)

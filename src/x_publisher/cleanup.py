@@ -106,6 +106,18 @@ class CleanupRepository:
             raise Problem("candidate_unavailable", "Candidate was not retrieved by this account")
         return json.loads(row[0])
 
+    def publication_receipt(self, account, post_id):
+        # Only server-persisted, verified direct publication receipts establish ownership.
+        # Caller-supplied text, URLs and post IDs alone cannot authorize deletion.
+        for row in self.store.db.execute("SELECT payload,result,created FROM operations WHERE account=?", (account,)):
+            payload, result = json.loads(row[0]), json.loads(row[1])
+            for index, receipt in enumerate(result.get('posts', [])):
+                if receipt.get('id') == post_id and receipt.get('verified') is True:
+                    posts = payload.get('posts', [])
+                    if index < len(posts):
+                        return posts[index], row[2]
+        raise Problem('publication_receipt_unavailable', 'No verified publication receipt for this post and account; use an authenticated scan')
+
     def verify_browser_observation(self, account, candidate):
         row = self.db.execute('SELECT * FROM browser_observations WHERE candidate=? AND account=?',
             (candidate['candidate_id'], account)).fetchone()
@@ -292,6 +304,12 @@ class Cleanup:
             target = c.get("repost_of") if c["content_type"] == "REPOST" else c["content_id"]
             key = (proposal.action, target)
             reason = None
+            if c['source'] == 'publication_receipt':
+                self.repo.publication_receipt(account, c['content_id'])
+                if not isinstance(backend, SessionCleanup):
+                    raise Problem('receipt_backend_unsupported', 'Publication receipt deletion requires the connected session')
+                if policy.engagement_thresholds:
+                    raise Problem('fresh_metrics_required', 'Engagement protections require an authenticated scan with current metrics')
             if c['source'] in LOCAL_OBSERVATION_SOURCES:
                 try:
                     self.repo.verify_browser_observation(account, c)
@@ -335,7 +353,9 @@ class Cleanup:
             "counts_by_action": dict(Counter(a["action"] for a in actions)),
             "counts_by_content": dict(Counter(a["candidate"]["content_type"] for a in actions)),
             "validation_failures": failures, "protected_or_skipped": skipped, "policy": policy.model_dump(),
-            "validation_source": ("authenticated_session_identity_and_locally_attested_browser_or_public_x_view; attestation_revalidated_before_dispatch"
+            "validation_source": ("verified_server_publication_receipt; receipt_and_session_identity_revalidated_before_dispatch"
+                if any(a['candidate']['source'] == 'publication_receipt' for a in actions)
+                else "authenticated_session_identity_and_locally_attested_browser_or_public_x_view; attestation_revalidated_before_dispatch"
                 if any(a['candidate']['source'] in LOCAL_OBSERVATION_SOURCES for a in actions)
                 else "authenticated_"+getattr(backend, 'source', 'x_api_v2')+"_snapshots; live_revalidation_before_each_action"),
             "created_at": time.time()}
@@ -347,6 +367,22 @@ class Cleanup:
                 self.repo.db.execute("INSERT INTO progress(plan,seq,state) VALUES (?,?,'pending')", (pid, seq))
             self.repo.db.execute("INSERT INTO plan_seals VALUES (?)", (pid,))
         return self.status(account, pid)
+
+    async def preview_post_deletion(self, account, post_id):
+        if not isinstance(post_id, str) or not post_id.isdigit():
+            raise Problem('invalid_target', 'Use an exact numeric post ID')
+        self.store.account(account)
+        post, created = self.repo.publication_receipt(account, post_id)
+        candidate = Candidate(candidate_id=identifier(), account_id=account, content_id=post_id,
+            content_type='REPLY' if post.get('reply_to') else 'QUOTE' if post.get('quote_id') else 'POST',
+            author_id=account, text=post.get('text'),
+            created_at=datetime.fromtimestamp(created, timezone.utc),
+            reply_to=post.get('reply_to'), quote_id=post.get('quote_id'),
+            observed_at=time.time(), source='publication_receipt').model_dump(mode='json')
+        with self.repo.db:
+            self.repo.db.execute('INSERT INTO candidates VALUES (?,?,?,?)',
+                (candidate['candidate_id'], account, canonical(candidate), time.time()))
+        return await self.preview(account, [ProposedAction(candidate_id=candidate['candidate_id'], action='DELETE_POST')])
 
     def status(self, account, pid, cursor=0, limit=100):
         if cursor < 0 or not 1 <= limit <= 500:
@@ -479,7 +515,15 @@ class Cleanup:
                     # Verify remote snapshots again, or the private administrator's
                     # short-lived browser observation when the remote lookup fails.
                     browser_reviewed = action['candidate']['source'] in LOCAL_OBSERVATION_SOURCES
-                    if browser_reviewed:
+                    receipt_verified = action['candidate']['source'] == 'publication_receipt'
+                    if receipt_verified:
+                        self.repo.publication_receipt(account, action['target_id'])
+                        if not isinstance(backend, SessionCleanup) or action['action'] != 'DELETE_POST':
+                            raise Problem('receipt_backend_unsupported', 'Publication receipt deletion requires the connected session')
+                        if self.repo.policy(account).engagement_thresholds:
+                            raise Problem('fresh_metrics_required', 'Engagement protections require current authenticated metrics')
+                        fresh = action['candidate']
+                    elif browser_reviewed:
                         self.repo.verify_browser_observation(account, action['candidate'])
                         if not isinstance(backend, SessionCleanup) or action['action'] != 'DELETE_POST':
                             raise Problem('browser_observation_unsupported', 'Browser observations support exact authored-post deletion through the session backend')
@@ -517,7 +561,9 @@ class Cleanup:
                             continue
                         self._record(account, pid, seq, action, "inflight", {"code": "request_intent"})
                     submitted = True
-                    if browser_reviewed:
+                    if receipt_verified:
+                        receipt = await backend.execute_receipt_verified(account, action['target_id'])
+                    elif browser_reviewed:
                         receipt = await backend.execute_browser_verified(account, action['action'], action['target_id'])
                     elif action['action'] == 'UNDO_REPOST' and isinstance(backend, SessionCleanup):
                         receipt = await backend.execute_repost(account, action['target_id'], action['candidate']['content_id'])

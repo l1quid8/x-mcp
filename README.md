@@ -314,9 +314,19 @@ client. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/e
 | `buffer:status` | `buffer_status`, `buffer_post_status` | Connected Buffer X channels and delivery receipts |
 | `buffer:publish` | `preview_buffer_post`, `publish_buffer_post` | Preview and submit exact Buffer posts |
 | `cleanup:read` | `cleanup_status`, `scan_content`, `deletion_status`, `deletion_audit_history`, `cleanup_protections` (read) | Owned-content scans and review |
-| `cleanup:plan` | `stage_deletion_actions`, `preview_deletion_plan` | Frozen deletion plans |
+| `cleanup:plan` | `stage_deletion_actions`, `preview_deletion_plan`, `preview_post_deletion` | Frozen deletion plans |
 | `cleanup:execute` | `execute_deletion_plan` | Dry run or execute an exact plan |
 | `cleanup:protect` | `cleanup_protections` (update) | Update deletion protections |
+
+For a post published directly through this server, use
+`preview_post_deletion(account_id, post_id)` to prepare an exact deletion plan
+without scanning the timeline. The server requires its own stored, verified
+publication receipt for that account and post; an arbitrary post ID is rejected.
+Then review and execute the returned plan with `execute_deletion_plan`.
+Session identity, pinned-post and ID protections, minimum age, auditing and
+idempotency still apply. Engagement-based protection requires current metrics
+and therefore cannot use this receipt-only path. Buffer receipts that do not
+contain a verified direct X publication receipt require the usual scan workflow.
 
 New OAuth grants request `x:read` unless `X_MCP_DEFAULT_SCOPES=all` is set.
 Publishing and cleanup grants
