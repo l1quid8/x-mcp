@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import time
+from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
 from starlette.applications import Starlette
@@ -24,6 +25,20 @@ class Worker:
         self.context = None
         self.session = None
         self.started = 0.0
+        self.events = []
+
+    def note(self, kind, url="", status=None):
+        host = urlsplit(url).hostname or ""
+        if kind != "page_error" and not (host == "x.com" or host.endswith(".x.com")
+                                         or host == "twimg.com" or host.endswith(".twimg.com")):
+            return
+        path = urlsplit(url).path
+        area = "onboarding" if "/onboarding/" in path else "graphql" if "/graphql/" in path else "other"
+        event = {"kind": kind, "area": area, "seconds": int(time.monotonic() - self.started)}
+        if status is not None:
+            event["status"] = status
+        self.events.append(event)
+        self.events = self.events[-50:]
 
     async def stop(self):
         for resource in (self.context, self.browser, self.playwright):
@@ -34,6 +49,7 @@ class Worker:
                     pass
         self.context = self.browser = self.playwright = self.session = None
         self.started = 0.0
+        self.events = []
 
     async def expire(self):
         while True:
@@ -72,14 +88,21 @@ class Worker:
                     self.browser = await self.playwright.chromium.launch(headless=False, args=["--no-first-run", "--disable-dev-shm-usage", "--window-size=1280,800"])
                     self.context = await self.browser.new_context(accept_downloads=False, viewport={"width": 1280, "height": 720})
                     page = await self.context.new_page()
+                    page.on("response", lambda response: self.note("response", response.url, response.status)
+                            if response.status >= 400 or "/onboarding/" in urlsplit(response.url).path else None)
+                    page.on("requestfailed", lambda failed: self.note("request_failed", failed.url))
+                    page.on("pageerror", lambda _error: self.note("page_error"))
+                    self.started = time.monotonic()
                     await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=60000)
-                    self.session, self.started = session, time.monotonic()
+                    self.session = session
                 except Exception:
                     await self.stop()
                     return JSONResponse({"error": "browser_unavailable"}, status_code=503)
                 return JSONResponse({"state": "ready"})
             if self.session != session:
                 return JSONResponse({"error": "session_unavailable"}, status_code=404)
+            if request.url.path == "/diagnostics":
+                return JSONResponse({"events": self.events})
             if request.url.path == "/finish":
                 try:
                     cookies = {c["name"]: c["value"] for c in await self.context.cookies("https://x.com")
@@ -99,6 +122,7 @@ app = Starlette(routes=[Route("/start", worker.request, methods=["POST"]),
                         Route("/finish", worker.request, methods=["POST"]),
                         Route("/stop", worker.request, methods=["POST"]),
                         Route("/reset", worker.request, methods=["POST"]),
+                        Route("/diagnostics", worker.request, methods=["POST"]),
                         Route("/health", lambda request: JSONResponse({"ready": True}), methods=["GET"])])
 @app.on_event("startup")
 async def startup():
