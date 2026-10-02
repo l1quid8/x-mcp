@@ -77,6 +77,25 @@ async def test_reconnect_rejects_different_identity_and_cancel_closes(app, store
         assert app.state.worker_calls == ["start", "finish", "start", "stop"]
 
 
+async def test_repeated_start_returns_to_browser_and_owner_can_end_other_attempt(app):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
+        first_csrf = await login(c)
+        start = await c.post(BASE + "/start", data={"account": "new", "csrf": first_csrf},
+                             headers={"Origin": ORIGIN})
+        assert start.status_code == 303
+        repeated = await c.post(BASE + "/start", data={"account": "new", "csrf": first_csrf},
+                                headers={"Origin": ORIGIN})
+        assert repeated.status_code == 303 and repeated.headers["location"] == BASE
+        assert app.state.worker_calls == ["start"]
+        other_csrf = await login(c)
+        page = await c.get(BASE)
+        assert "End previous sign-in" in page.text
+        reset = await c.post(BASE + "/reset", data={"csrf": other_csrf}, headers={"Origin": ORIGIN})
+        assert reset.status_code == 303 and reset.headers["location"] == BASE
+        assert app.state.worker_calls == ["start", "reset"]
+        assert "Open X sign-in" in (await c.get(BASE)).text
+
+
 async def test_owner_can_allow_exact_client_callback_in_browser(app, store):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
         assert "Client callback URL" not in (await c.get(BASE)).text

@@ -91,7 +91,10 @@ class BrowserConnect:
             content += '<form method="post" action="'+BASE+'/finish"><input type="hidden" name="csrf" value="'+csrf+'"><button>Finish connection</button></form>'
             content += '<form method="post" action="'+BASE+'/cancel"><input type="hidden" name="csrf" value="'+csrf+'"><button>Cancel</button></form>'
         elif self.active:
-            content = '<p>Another browser connection is in progress. Try again when it finishes.</p>'
+            content = ('<p>Another X sign-in is in progress in a different browser. '
+                       'You can end that attempt and start again here. The other browser will close without saving its session.</p>'
+                       '<form method="post" action="'+BASE+'/reset"><input type="hidden" name="csrf" value="'+csrf+'">'
+                       '<button>End previous sign-in</button></form>')
         else:
             content = '<form method="post" action="'+BASE+'/start"><input type="hidden" name="csrf" value="'+csrf+'"><label>Account <select name="account">'+choices+'</select></label><button>Open X sign-in</button></form>'
         return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:1000px;margin:24px auto;padding:24px}label,button{font:inherit;margin:12px}</style><h1>Connect X account</h1>'+content+'</html>', headers=self.headers())
@@ -142,7 +145,7 @@ class BrowserConnect:
         if not hmac.compare_digest(form.get("csrf", ""), data["csrf"]):
             return JSONResponse({"error": "invalid_csrf"}, status_code=403, headers=self.headers())
         action = request.path_params["action"]
-        if action not in {"start", "finish", "cancel", "callback"}:
+        if action not in {"start", "finish", "cancel", "reset", "callback"}:
             return Response(status_code=404)
         if action == "callback":
             callback = callback_key(form.get("callback", ""))
@@ -154,11 +157,22 @@ class BrowserConnect:
         async with self.lock:
             if self.active and time.monotonic() >= self.active["expires"]:
                 self.active = None
+            if action == "reset":
+                if not self.active:
+                    return RedirectResponse(BASE, status_code=303, headers=self.headers())
+                try:
+                    result = await self.worker("reset", "")
+                except httpx.HTTPError:
+                    return HTMLResponse("Could not end the previous sign-in. Please try again.", status_code=503, headers=self.headers())
+                if result.status_code != 200:
+                    return HTMLResponse("Could not end the previous sign-in. Please try again.", status_code=503, headers=self.headers())
+                self.active = None
+                return RedirectResponse(BASE, status_code=303, headers=self.headers())
             if action == "start":
                 if not self.configured():
                     return JSONResponse({"error": "browser_unavailable"}, status_code=503, headers=self.headers())
                 if self.active:
-                    return JSONResponse({"error": "busy"}, status_code=409, headers=self.headers())
+                    return RedirectResponse(BASE, status_code=303, headers=self.headers())
                 account = form.get("account", "")
                 if account != "new":
                     try:

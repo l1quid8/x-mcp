@@ -74,6 +74,9 @@ a private network or bind its ports to loopback only.
    callback URL shown by the client. Then retry. Publishing uses the saved
    session; the temporary browser can close.
 
+If another browser still owns a sign-in attempt, choose **End previous sign-in**
+on the connection page to close that temporary browser, then start again.
+
 If X rejects login from the VPS or requires a passkey stored only on the local
 computer, use another X verification method or the optional local connection
 helper. Repeated login attempts can trigger X account restrictions, so resolve
