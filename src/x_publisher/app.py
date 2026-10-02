@@ -380,7 +380,7 @@ def main():
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     uvicorn.run(create_app(), host=os.environ.get("X_MCP_HOST", "127.0.0.1"), port=int(os.environ.get("X_MCP_PORT", "8770")),
                 access_log=False, log_level="warning",
-                proxy_headers=False, limit_concurrency=16, timeout_keep_alive=10, ws="auto")
+                proxy_headers=False, limit_concurrency=128, timeout_keep_alive=10, ws="auto")
 
 
 if __name__ == "__main__":
