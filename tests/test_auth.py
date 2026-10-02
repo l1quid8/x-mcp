@@ -9,7 +9,7 @@ from mcp.server.auth.provider import AuthorizationParams, RegistrationError, Tok
 import pytest
 
 from x_publisher.app import create_app
-from x_publisher.auth import OwnerOAuth, callback_key
+from x_publisher.auth import CHATGPT_CALLBACK, OwnerOAuth, callback_key
 from x_publisher.core import DEFAULT_SCOPES, ISSUER, RESOURCE, SCOPES
 from test_publisher import store, Backend, rpc
 
@@ -53,6 +53,65 @@ async def test_codex_loopback_callback_requires_approved_path(store):
         authorization = await client.get(md["authorization_endpoint"], params=params)
         assert authorization.status_code in (302, 303, 307)
         assert authorization.headers["location"].startswith(ISSUER + "/consent?")
+
+
+async def test_chatgpt_stable_callback_registration_and_issuer_identification(store):
+    app = create_app(store, "owner-" + "x" * 60, Backend)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test",
+            follow_redirects=False) as client:
+        for path in ("/.well-known/oauth-authorization-server/x-mcp/oauth",
+                     "/x-mcp/oauth/.well-known/oauth-authorization-server"):
+            metadata = (await client.get(path)).json()
+            assert metadata["issuer"] == ISSUER
+            assert metadata["authorization_response_iss_parameter_supported"] is True
+            assert "none" in metadata["token_endpoint_auth_methods_supported"]
+
+        body = {
+            "redirect_uris": [CHATGPT_CALLBACK],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        }
+        blocked = await client.post(metadata["registration_endpoint"], json=body)
+        assert blocked.status_code == 400
+        store.set_setting("callbacks", [CHATGPT_CALLBACK])
+        registration = await client.post(metadata["registration_endpoint"], json=body)
+        assert registration.status_code == 201, registration.text
+        credentials = registration.json()
+        assert credentials.get("client_secret") is None
+        verifier = "v" * 64
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        params = {"client_id": credentials["client_id"], "redirect_uri": CHATGPT_CALLBACK,
+                  "response_type": "code", "code_challenge": challenge, "code_challenge_method": "S256",
+                  "scope": "x:read", "resource": RESOURCE, "state": "chatgpt-state"}
+
+        error = await client.get(metadata["authorization_endpoint"], params={**params, "scope": "admin:all"})
+        error_params = parse_qs(urlsplit(error.headers["location"]).query)
+        assert error_params["error"] == ["invalid_scope"]
+        assert error_params["iss"] == [ISSUER]
+
+        authorization = await client.get(metadata["authorization_endpoint"], params=params)
+        assert "iss" not in parse_qs(urlsplit(authorization.headers["location"]).query)
+        pending = parse_qs(urlsplit(authorization.headers["location"]).query)["request"][0]
+        consent = await client.get(authorization.headers["location"])
+        assert consent.status_code == 200
+        approved = await client.post("/x-mcp/oauth/consent", data={
+            "request": pending, "key": "owner-" + "x" * 60,
+        }, headers={"Origin": "https://mcp.example.test"})
+        assert approved.status_code == 303, approved.text
+        callback_params = parse_qs(urlsplit(approved.headers["location"]).query)
+        assert callback_params["iss"] == [ISSUER]
+        assert callback_params["state"] == ["chatgpt-state"]
+
+        token = await client.post(metadata["token_endpoint"], data={
+            "grant_type": "authorization_code", "code": callback_params["code"][0],
+            "client_id": credentials["client_id"],
+            "redirect_uri": CHATGPT_CALLBACK, "code_verifier": verifier, "resource": RESOURCE,
+        })
+        assert token.status_code == 200, token.text
+        tools = await rpc(client, token.json()["access_token"], "tools/list", {})
+        assert "tools" in tools.json()["result"]
 
 
 async def test_oauth_scopes_refresh_revocation(store):

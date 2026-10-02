@@ -242,6 +242,33 @@ exact callback in the owner-only `/x-mcp/connect/client-settings` page or with
 `x-mcp-admin allow-callback`, then approve the requested accounts and sensitive
 scopes on your consent page.
 
+## Connect ChatGPT on the web
+
+This is a direct MCP app connection. It does not require a plugin archive or
+Plugin Creator. Your ChatGPT account or workspace must have Developer mode for
+custom MCP servers enabled.
+
+1. On the MCP server, allow ChatGPT's stable OAuth callback once:
+
+   ```sh
+   x-mcp-admin allow-callback https://chatgpt.com/connector_platform_oauth_redirect
+   ```
+
+   You can also enter that URL on the owner-only
+   `/x-mcp/connect/client-settings` page. This approves the callback destination,
+   not access to an X account or permission to publish.
+2. In ChatGPT, enable Developer mode under **Settings → Security and login**.
+   Open **Plugins → Add → Create custom MCP server** and enter your public HTTPS
+   endpoint, for example `https://mcp.example.com/x-mcp/mcp`. Choose OAuth.
+3. Complete the server's owner consent page. Select the account and permissions
+   you want this ChatGPT connection to have, then let ChatGPT scan the tools.
+
+The server advertises OAuth issuer identification, so new ChatGPT connections
+use the stable callback above. Older connections that show a distinct
+`https://chatgpt.com/connector/oauth/...` callback still need that exact URL
+approved in client settings. Keep the owner key private; the callback allowlist
+alone never grants access.
+
 ## Connect Codex
 
 After your server is reachable over HTTPS, add its MCP resource URL to Codex:

@@ -7,10 +7,12 @@ import re
 import secrets
 import sqlite3
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from mcp.server.auth.provider import AccessToken, AuthorizationCode, AuthorizationParams, AuthorizeError, RefreshToken, RegistrationError, TokenError, construct_redirect_uri
 from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.routes import build_metadata, cors_middleware
+from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
@@ -21,6 +23,8 @@ from .core import ACCOUNT_SCOPES, BUFFER_SCOPES, DEFAULT_SCOPES, ISSUER, ORIGIN,
 
 METADATA = ORIGIN + "/.well-known/oauth-protected-resource" + PREFIX + "/mcp"
 COOKIE = "__Secure-xmcp-consent"
+CHATGPT_CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect"
+CANONICAL_ISSUER = str(AnyHttpUrl(ISSUER))
 ACCOUNT_PERMISSIONS = {
     "buffer:status": "View configured Buffer X channel status",
     "buffer:publish": "Create posts through a selected Buffer X channel",
@@ -248,19 +252,44 @@ class OwnerOAuth:
         self.put("code", code, dict(scopes=granted_scopes, accounts=accounts, expires_at=time.time()+120,
                   client_id=data["client"], code_challenge=params.code_challenge, redirect_uri=str(params.redirect_uri),
                   redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly, resource=RESOURCE, subject="owner"), 120)
-        response = RedirectResponse(construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state), status_code=303, headers=headers)
+        response = RedirectResponse(
+            construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state, iss=CANONICAL_ISSUER),
+            status_code=303, headers=headers)
         response.delete_cookie(COOKIE, path=PREFIX+"/oauth/consent", secure=True, httponly=True, samesite="lax")
         return response
 
 
 def oauth_routes(provider):
-    routes = create_auth_routes(provider, AnyHttpUrl(ISSUER),
-        client_registration_options=ClientRegistrationOptions(enabled=True, valid_scopes=SCOPES, default_scopes=DEFAULT_SCOPES),
-        revocation_options=RevocationOptions(enabled=True))
-    out = [Route(PREFIX+"/oauth"+r.path, r.endpoint, methods=list(r.methods)) for r in routes]
+    issuer_url = AnyHttpUrl(ISSUER)
+    registration_options = ClientRegistrationOptions(enabled=True, valid_scopes=SCOPES, default_scopes=DEFAULT_SCOPES)
+    revocation_options = RevocationOptions(enabled=True)
+    routes = create_auth_routes(provider, issuer_url,
+        client_registration_options=registration_options, revocation_options=revocation_options)
+    metadata = build_metadata(issuer_url, None, registration_options, revocation_options)
+    metadata.authorization_response_iss_parameter_supported = True
+    metadata.token_endpoint_auth_methods_supported = ["none", "client_secret_post", "client_secret_basic"]
+    metadata_endpoint = cors_middleware(MetadataHandler(metadata).handle, ["GET", "OPTIONS"])
+    out = []
     for r in routes:
+        endpoint = r.endpoint
         if r.path == "/.well-known/oauth-authorization-server":
-            out.append(Route("/.well-known/oauth-authorization-server"+PREFIX+"/oauth", r.endpoint, methods=list(r.methods)))
+            endpoint = metadata_endpoint
+        elif r.path == "/authorize":
+            async def authorization_with_issuer(request, original=endpoint):
+                response = await original(request)
+                location = response.headers.get("location")
+                if location:
+                    parsed = urlsplit(location)
+                    callback = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+                    if callback_key(callback) and "error" in parse_qs(parsed.query):
+                        query = parsed.query + ("&" if parsed.query else "") + urlencode({"iss": CANONICAL_ISSUER})
+                        response.headers["location"] = urlunsplit(
+                            (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+                return response
+            endpoint = authorization_with_issuer
+        out.append(Route(PREFIX+"/oauth"+r.path, endpoint, methods=list(r.methods)))
+        if r.path == "/.well-known/oauth-authorization-server":
+            out.append(Route("/.well-known/oauth-authorization-server"+PREFIX+"/oauth", endpoint, methods=list(r.methods)))
     out.extend(create_protected_resource_routes(AnyHttpUrl(RESOURCE), [AnyHttpUrl(ISSUER)], SCOPES, resource_name="X MCP"))
     out.append(Route(PREFIX+"/oauth/consent", provider.consent, methods=["GET", "POST"]))
     return out
