@@ -16,6 +16,11 @@ The publishing and session-cleanup backend uses
 copied source. Twikit is [MIT licensed](https://github.com/d60/twikit/blob/main/LICENSE),
 and its exact revision is recorded in `pyproject.toml` and `uv.lock`.
 
+The optional Buffer publisher calls [Buffer's documented API](https://developers.buffer.com/).
+No Buffer source code is copied into this repository. Buffer handles its own X
+channel connection and publishing; each self-hosted installation uses its own
+Buffer account and API key.
+
 The original publisher implementation came from a private project. Its license
 will be stated separately if the owner chooses to grant reuse rights. The
 server has no default MCP origin or hosted endpoint; every self-hosting

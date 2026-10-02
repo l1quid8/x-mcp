@@ -223,7 +223,7 @@ async def test_http_auth_tools_and_scopes(store):
         response = await rpc(c,token,"initialize",{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}})
         assert response.status_code == 200, response.text
         tools = (await rpc(c,token,"tools/list")).json()["result"]["tools"]
-        assert len(tools) == 18
+        assert len(tools) == 22
         assert {"publishing_status", "stage_media", "begin_media_upload", "preview_publication", "publish_publication", "publication_status"} <= {t["name"] for t in tools}
         files = next(t for t in tools if t["name"] == "stage_media")
         assert files["_meta"]["openai/fileParams"] == ["files"]

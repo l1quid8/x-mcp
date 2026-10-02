@@ -7,6 +7,8 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +29,10 @@ if not re.fullmatch(r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", PREFIX):
 RESOURCE = ORIGIN + PREFIX + "/mcp"
 ISSUER = ORIGIN + PREFIX + "/oauth"
 DEFAULT_SCOPES = ["x:read"]
-ACCOUNT_SCOPES = ["publisher:status", "publisher:media", "publisher:publish",
-                  "cleanup:read", "cleanup:plan", "cleanup:execute", "cleanup:protect"]
+X_ACCOUNT_SCOPES = ["publisher:status", "publisher:media", "publisher:publish",
+                    "cleanup:read", "cleanup:plan", "cleanup:execute", "cleanup:protect"]
+BUFFER_SCOPES = ["buffer:status", "buffer:publish"]
+ACCOUNT_SCOPES = X_ACCOUNT_SCOPES + BUFFER_SCOPES
 SCOPES = DEFAULT_SCOPES + ACCOUNT_SCOPES
 TERMINAL = {"succeeded", "failed", "partial", "unknown"}
 
@@ -166,6 +170,86 @@ class Store:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, canonical(value)))
 
+    def buffer_key(self) -> str | None:
+        """Read the encrypted Buffer personal key from private server state."""
+        path = self.directory / "buffer-key.enc"
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(mode) or mode & 0o077:
+            raise ValueError("Buffer key file must be regular and private (mode 600)")
+        return self.cipher.decrypt(path.read_bytes()).decode("utf-8")
+
+    def save_buffer_key(self, key: str) -> None:
+        if not isinstance(key, str) or not key or len(key) > 4096 or "\r" in key or "\n" in key:
+            raise ValueError("Invalid Buffer key")
+        path = self.directory / "buffer-key.enc"
+        fd, temp = tempfile.mkstemp(dir=self.directory)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as file:
+                file.write(self.cipher.encrypt(key.encode("utf-8")))
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+        # A new credential has no trusted channel grants until the provider is queried.
+        self.save_buffer_channels([])
+
+    def buffer_channels(self) -> list[dict]:
+        if not self.buffer_key():
+            return []
+        return self.setting("buffer_channels", [])
+
+    def save_buffer_channels(self, channels: list[dict]) -> None:
+        """Persist channels verified against the configured Buffer credential."""
+        if not isinstance(channels, list):
+            raise ValueError("Expected a list of Buffer X channels")
+        selected = []
+        seen = set()
+        for channel in channels:
+            if not isinstance(channel, dict):
+                raise ValueError("Invalid Buffer channel")
+            account_id = channel.get("account_id")
+            channel_id = channel.get("channel_id")
+            if (not isinstance(channel_id, str) or not channel_id or len(channel_id) > 256
+                    or not all(33 <= ord(c) <= 126 and c != ":" for c in channel_id)
+                    or account_id != "buffer:" + channel_id or account_id in seen):
+                raise ValueError("Invalid Buffer channel identifier")
+            display_name = channel.get("display_name", "")
+            handle = channel.get("handle", "")
+            if (not isinstance(display_name, str) or len(display_name) > 256
+                    or not isinstance(handle, str) or len(handle) > 256):
+                raise ValueError("Invalid Buffer channel label")
+            selected.append({"account_id": account_id, "channel_id": channel_id,
+                             "display_name": display_name, "handle": handle})
+            seen.add(account_id)
+        self.set_setting("buffer_channels", selected)
+
+    def buffer_channel(self, account_id: str) -> dict:
+        if not isinstance(account_id, str) or not account_id.startswith("buffer:"):
+            raise Problem("account_unavailable", "Choose a configured Buffer X channel")
+        for channel in self.buffer_channels():
+            if channel["account_id"] == account_id:
+                return channel
+        raise Problem("account_unavailable", "Choose a configured Buffer X channel")
+
+    def validate_grant_accounts(self, scopes, accounts) -> None:
+        """Never let a channel ID inherit an unrelated provider's permission."""
+        scopes = set(scopes)
+        for account_id in accounts:
+            if account_id.startswith("buffer:"):
+                if not scopes.intersection(BUFFER_SCOPES):
+                    raise ValueError("Buffer channel requires a Buffer scope")
+                self.buffer_channel(account_id)
+            else:
+                if not scopes.intersection(X_ACCOUNT_SCOPES):
+                    raise ValueError("X account requires a publisher or cleanup scope")
+                self.account(account_id)
+
     def account(self, account_id):
         row = self.db.execute("SELECT * FROM accounts WHERE id=? AND active=1", (account_id,)).fetchone()
         if not row:
@@ -186,8 +270,7 @@ class Store:
             raise ValueError("A known scope is required")
         if not set(scopes).intersection(ACCOUNT_SCOPES):
             accounts = []
-        for account in accounts:
-            self.account(account)
+        self.validate_grant_accounts(scopes, accounts)
         token = secrets.token_urlsafe(48)
         with self.db:
             self.db.execute("INSERT INTO tokens VALUES (?,?,?,?,?,1)", (

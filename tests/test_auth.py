@@ -81,7 +81,7 @@ async def test_oauth_scopes_refresh_revocation(store):
 
 @pytest.mark.parametrize("requested_scopes,approved_scopes,selected_accounts", [
     (DEFAULT_SCOPES, [], []),
-    (SCOPES, ["publisher:publish", "cleanup:execute", "cleanup:protect"], ["1"]),
+    (SCOPES, ["buffer:publish", "publisher:publish", "cleanup:execute", "cleanup:protect"], ["1"]),
 ])
 async def test_full_oauth_pkce_consent_and_replay(store, requested_scopes, approved_scopes, selected_accounts):
     store.set_setting("callbacks",[CALLBACK])

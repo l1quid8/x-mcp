@@ -3,7 +3,7 @@ import httpx
 import pytest
 
 from x_publisher.app import create_app
-from x_publisher.browser_connect import BASE, CLIENT_SETTINGS
+from x_publisher.browser_connect import BASE, BUFFER_SETTINGS, CLIENT_SETTINGS
 from x_publisher.core import ORIGIN
 from test_pairing import SessionBackend
 from test_publisher import store
@@ -122,3 +122,42 @@ async def test_owner_can_allow_exact_client_callback_in_browser(app, store):
         good = await c.post(path, data={"csrf": csrf, "callback": url}, headers=headers)
         assert good.status_code == 200
         assert store.setting("callbacks") == ["http://127.0.0.1/callback/Abcdefgh1234"]
+
+
+async def test_owner_can_connect_buffer_without_exposing_key(app, store, monkeypatch):
+    import x_publisher.buffer_api as buffer_module
+
+    class FakeBufferAPI:
+        def __init__(self, key):
+            assert key == "buffer-test-key-123456789"
+
+        async def list_channels(self):
+            return [
+                {"id": "chan-1", "name": "My X account", "username": "myhandle",
+                 "service": "twitter", "isDisconnected": False, "isLocked": False},
+                {"id": "chan-2", "name": "Unavailable", "username": "other",
+                 "service": "twitter", "isDisconnected": True, "isLocked": False},
+            ]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(buffer_module, "BufferAPI", FakeBufferAPI)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
+        assert "api_key" not in (await c.get(BUFFER_SETTINGS)).text
+        assert (await c.post(BUFFER_SETTINGS, data={"api_key": "buffer-test-key-123456789"},
+                             headers={"Origin": ORIGIN})).status_code == 403
+        csrf = await login(c)
+        wrong_origin = await c.post(BUFFER_SETTINGS,
+                                    data={"csrf": csrf, "api_key": "buffer-test-key-123456789"},
+                                    headers={"Origin": "https://other.example"})
+        assert wrong_origin.status_code == 403
+        result = await c.post(BUFFER_SETTINGS,
+                              data={"csrf": csrf, "api_key": "buffer-test-key-123456789"},
+                              headers={"Origin": ORIGIN})
+        assert result.status_code == 303 and result.headers["location"] == BUFFER_SETTINGS
+        assert store.buffer_key() == "buffer-test-key-123456789"
+        assert b"buffer-test-key-123456789" not in (store.directory / "buffer-key.enc").read_bytes()
+        assert [c["account_id"] for c in store.buffer_channels()] == ["buffer:chan-1"]
+        page = await c.get(BUFFER_SETTINGS)
+        assert "My X account" in page.text and "buffer-test-key-123456789" not in page.text

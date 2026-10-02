@@ -7,9 +7,11 @@ permission system. This repository provides source code; it does **not** provide
 a hosted MCP endpoint, account sessions, or credentials.
 
 The reader adapts the MIT-licensed [Nitter MCP](https://github.com/Alastrantia/nitter-mcp)
-code and currently requests RSS from public Nitter instances. Publishing and
-session-based cleanup use the MIT-licensed [Twikit](https://github.com/d60/twikit)
-library. See [provenance and license credits](docs/PROVENANCE.md). This is an
+code and currently requests RSS from public Nitter instances. Publishing can
+use [Buffer](https://buffer.com/api), with X connected to Buffer in your local
+browser, or a direct X session through the MIT-licensed
+[Twikit](https://github.com/d60/twikit) library. Session-based cleanup still
+uses Twikit. See [provenance and license credits](docs/PROVENANCE.md). This is an
 integrated derivative project, not an independent implementation of those
 components or a copy of X's data.
 
@@ -17,15 +19,20 @@ components or a copy of X's data.
 
 - **Read:** search public posts, fetch a public account timeline, combine recent
   posts from curated news sources, and inspect mirror freshness.
-- **Publish:** stage media, preview an exact post or thread, submit it to a
-  selected connected account, and check the operation receipt. Article
-  publishing is disabled pending protocol validation.
+- **Publish through Buffer:** preview an exact text or image post, send it now,
+  queue it, or schedule it for a connected X channel, then check Buffer's
+  delivery status. Image URLs must be direct, public, and remain available
+  until Buffer sends the post.
+- **Publish through a direct X session:** stage media, preview an exact post or
+  thread, submit it to a selected account, and check the operation receipt.
+  Article publishing is disabled pending protocol validation.
 - **Clean up:** scan owned content, protect selected posts, review a frozen
   deletion plan, dry run it, and execute an explicitly requested plan.
 
-Publishing and cleanup permissions are bound to numeric X account IDs. A read
-grant cannot authorize a post or deletion. Post text, search results, and
-cleanup reasons are treated as untrusted data.
+Buffer publishing permissions are bound to selected `buffer:<channel_id>`
+destinations. Direct-session publishing and cleanup permissions are bound to
+numeric X account IDs. A read grant cannot authorize a post or deletion. Post
+text, search results, and cleanup reasons are treated as untrusted data.
 
 ## Requirements
 
@@ -35,8 +42,10 @@ cleanup reasons are treated as untrusted data.
   `127.0.0.1:8770` by default; the proxy must forward your chosen path prefix.
 - Persistent private state, an encryption key, and an owner key. Never commit
   keys, OAuth tokens, X sessions, or staged media.
-- An X session for each account you want to publish from or clean up. Public
-  reading currently also needs reachable Nitter instances.
+- For Buffer publishing, your own Buffer account with its X channel connected
+  and a Buffer API key. A direct X session is needed only for the optional
+  session publisher or session-based cleanup. Public reading currently also
+  needs reachable Nitter instances.
 
 The examples below use `mcp.example.com`, a placeholder. Replace it with a
 hostname you control. **There is no default remote destination:** the server
@@ -44,11 +53,11 @@ and account helpers refuse to start without `X_MCP_ORIGIN`.
 
 ## Install and configure
 
-### Browser-only account setup with Docker Compose
+### Self-hosted setup with Docker Compose
 
-This is the recommended route for a new self-hosted installation. It runs X
-MCP and a disposable browser service on your VPS. Nothing is installed on the
-computer from which you connect an X account.
+This runs X MCP and a disposable browser service on your VPS. Buffer publishing
+uses your normal browser to connect X to Buffer; it does not use the disposable
+VPS browser or require a browser extension on your computer.
 
 ```sh
 git clone https://github.com/l1quid8/x-mcp.git
@@ -69,10 +78,17 @@ of it. Forward `/x-mcp/*` and the OAuth discovery paths under
 browser service's ports. See [browser connection details](docs/BROWSER_CONNECT.md)
 for a proxy example and troubleshooting.
 
-Then open `https://mcp.your-domain.com/x-mcp/connect` on your own computer,
-enter the owner key, and sign in to X in the temporary browser shown there.
-The browser runs on your VPS, and the session is stored encrypted there after
-identity verification. You can close the page and your computer afterward.
+For Buffer publishing, connect X at [Buffer's channel settings](https://account.buffer.com/channels),
+then open `https://mcp.your-domain.com/x-mcp/connect/buffer` on your own
+computer. Enter your server owner key and a Buffer API key. The server checks
+which X channels that key can use and stores the key encrypted. No X password
+or website cookies pass through X MCP. [Buffer offers API access on its Free
+plan](https://buffer.com/pricing), subject to its channel, queue, and request
+limits. Each self-hosted deployment needs its own Buffer account and key.
+
+The older direct-session route remains at `/x-mcp/connect`. It signs in to X
+inside a temporary browser on your VPS. X may refuse that login; Buffer does
+not depend on it.
 
 ### Manual Python service
 
@@ -142,7 +158,29 @@ loopback targets to prevent server-side request forgery.
 
 ## Connect an account
 
-The browser-only method above is the primary setup path. It starts a fresh X
+### Buffer publishing
+
+Create a personal key in [Buffer Settings → API](https://publish.buffer.com/settings/api).
+Select `accountRead`, `postsRead`, and `postsWrite` permissions; leave unrelated
+permissions off. Keep the key private. Open `/x-mcp/connect/buffer` on your own
+server to save it after entering your owner key. The page lists the usable X
+channels verified by Buffer. Connecting one does not grant an MCP client
+permission to publish; approve that channel and `buffer:publish` separately in
+the MCP consent page. For manual server administration, a root-only
+`x-mcp-admin configure-buffer --file /path/to/private-key-file` command is
+available; the input file must be mode `0600`.
+
+Buffer's API takes image URLs rather than file uploads. A URL must load the
+image directly over public HTTPS without login and remain live until the post
+publishes. [Buffer explains media hosting requirements](https://developers.buffer.com/guides/hosting-media.html).
+`shareNow` asks Buffer to publish immediately; a successful Buffer API response
+can still mean queued or processing. Check `buffer_post_status` before reporting
+delivery to X. This integration does not turn Buffer into a general X search or
+cleanup API.
+
+### Direct X session and cleanup
+
+The direct-session method starts a fresh X
 login on your server. Select **New account** or an existing account to reconnect,
 complete X sign-in, and choose **Finish connection**. This does not publish a
 post or grant an MCP client access to the account. Existing MCP clients need a
@@ -203,6 +241,8 @@ client. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/e
 | `publisher:status` | `publishing_status`, `publication_status` | Authorized accounts and operation receipts |
 | `publisher:media` | `stage_media`, `begin_media_upload` | Private media staging |
 | `publisher:publish` | `preview_publication`, `publish_publication` | Exact draft preview and publication |
+| `buffer:status` | `buffer_status`, `buffer_post_status` | Connected Buffer X channels and delivery receipts |
+| `buffer:publish` | `preview_buffer_post`, `publish_buffer_post` | Preview and submit exact Buffer posts |
 | `cleanup:read` | `cleanup_status`, `scan_content`, `deletion_status`, `deletion_audit_history`, `cleanup_protections` (read) | Owned-content scans and review |
 | `cleanup:plan` | `stage_deletion_actions`, `preview_deletion_plan` | Frozen deletion plans |
 | `cleanup:execute` | `execute_deletion_plan` | Dry run or execute an exact plan |
@@ -210,6 +250,8 @@ client. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/e
 
 New OAuth grants default to `x:read` only. Publishing and cleanup grants
 require selected account IDs, and sensitive scopes need explicit approval.
+Buffer grants select `buffer:<channel_id>` destinations separately from direct
+X session accounts. Existing direct-session tokens do not gain Buffer access.
 For publishing, preview freezes the exact content; submit its `draft_id` with
 a stable idempotency key only on an explicit request to publish. Poll
 `publication_status` for a receipt. A queued operation is not a successful
@@ -227,11 +269,13 @@ uv build
 ```
 
 The tests use a reserved example origin and mocked network responses. They do
-not validate live X publishing or account imports. Article publishing is
+not validate live Buffer or X publishing, or account imports. Article publishing is
 disabled. Public reads depend on third-party mirrors and may be incomplete or
 stale despite health checks. The session-backed write and cleanup adapters use
 unofficial X interfaces and can be affected by account restrictions or X
-changes. No production deployment is included in this repository.
+changes. The Buffer publisher depends on Buffer's API and its connection to X;
+it cannot read arbitrary X content or upload private image files. No production
+deployment is included in this repository.
 
 The Python wheel includes the adapted reader's MIT license. Twikit remains a
 separate pinned dependency with its own MIT license. Keep their notices and the

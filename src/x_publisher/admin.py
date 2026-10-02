@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pwd
 import secrets
+import stat
 import tempfile
 
 from cryptography.fernet import Fernet
@@ -56,6 +57,26 @@ async def import_session(store, args):
         await backend.close()
 
 
+async def verified_buffer_channels(key):
+    """Fetch X channels before granting any of them to MCP clients."""
+    from .buffer_api import BufferAPI
+    api = BufferAPI(key)
+    try:
+        channels = await api.list_channels()
+    finally:
+        await api.close()
+    selected = []
+    for channel in channels:
+        if (str(channel.get("service", "")).lower() not in {"twitter", "x"}
+                or channel.get("isDisconnected") or channel.get("isLocked")):
+            continue
+        identifier = str(channel["id"])
+        selected.append({"account_id": "buffer:" + identifier, "channel_id": identifier,
+                         "display_name": channel.get("name") or "",
+                         "handle": channel.get("username") or ""})
+    return selected
+
+
 def main():
     if os.geteuid() != 0:
         raise SystemExit("Run this administrative command with sudo")
@@ -83,6 +104,10 @@ def main():
     token.add_argument("--output", default=str(Path.home() / "x-mcp-connection.json"))
     token.add_argument("--owner", default=os.environ.get("X_MCP_OWNER_USER"))
     token.add_argument("--scopes", nargs="+", choices=SCOPES, default=DEFAULT_SCOPES)
+    config_buffer = sub.add_parser("configure-buffer", help="Read a Buffer personal API key from a private file and verify X channels")
+    config_buffer.add_argument("--file", required=True)
+    sub.add_parser("sync-buffer-channels", help="Refresh verified Buffer X channels")
+    sub.add_parser("buffer-channels", help="List verified Buffer X channel identifiers")
     config_x = sub.add_parser("configure-x-oauth", help="Read official app credentials from a private JSON file")
     config_x.add_argument("--file", required=True)
     connect_x = sub.add_parser("connect-x-oauth", help="Create an official X PKCE authorization link for one existing account")
@@ -148,6 +173,27 @@ def main():
             token = store.issue_token(args.label, args.scopes, args.accounts)
             secret_file(args.output, json.dumps({"url": RESOURCE, "token": token, "accounts": args.accounts}, indent=2) + "\n", args.owner)
             print("Saved private client configuration to " + args.output)
+        elif args.command == "configure-buffer":
+            path = Path(args.file)
+            mode = path.lstat().st_mode
+            if not stat.S_ISREG(mode) or mode & 0o077:
+                raise ValueError("Buffer credential input must be a regular private file (mode 600)")
+            key = path.read_text().strip()
+            if not key:
+                raise ValueError("Buffer credential input is empty")
+            channels = asyncio.run(verified_buffer_channels(key))
+            store.save_buffer_key(key)
+            store.save_buffer_channels(channels)
+            print(f"Buffer key stored encrypted; {len(channels)} connected X channels verified")
+        elif args.command == "sync-buffer-channels":
+            key = store.buffer_key()
+            if not key:
+                raise ValueError("Configure Buffer before syncing channels")
+            channels = asyncio.run(verified_buffer_channels(key))
+            store.save_buffer_channels(channels)
+            print(f"Verified {len(channels)} connected Buffer X channels")
+        elif args.command == "buffer-channels":
+            print(json.dumps(store.buffer_channels(), indent=2))
         elif args.command in {"configure-x-oauth", "connect-x-oauth", "approve-deletion-plan", "revoke-deletion-plan"}:
             from .cleanup import Cleanup
             import time
@@ -212,7 +258,8 @@ def main():
     finally:
         store.db.close()
         user = pwd.getpwnam(os.environ.get("X_MCP_SERVICE_USER", "xmcp"))
-        for path in [store.directory, store.media_directory, *store.directory.glob("*.sqlite3*")]:
+        for path in [store.directory, store.media_directory, *store.directory.glob("*.sqlite3*"),
+                     *(p for p in [store.directory / "buffer-key.enc"] if p.exists())]:
             os.chown(path, user.pw_uid, user.pw_gid)
             if path.is_file():
                 path.chmod(0o600)

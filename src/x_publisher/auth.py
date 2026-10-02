@@ -17,11 +17,13 @@ from pydantic import AnyHttpUrl
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
-from .core import ACCOUNT_SCOPES, DEFAULT_SCOPES, ISSUER, ORIGIN, PREFIX, RESOURCE, SCOPES, Principal, canonical
+from .core import ACCOUNT_SCOPES, BUFFER_SCOPES, DEFAULT_SCOPES, ISSUER, ORIGIN, PREFIX, RESOURCE, SCOPES, X_ACCOUNT_SCOPES, Principal, Problem, canonical
 
 METADATA = ORIGIN + "/.well-known/oauth-protected-resource" + PREFIX + "/mcp"
 COOKIE = "__Secure-xmcp-consent"
 ACCOUNT_PERMISSIONS = {
+    "buffer:status": "View configured Buffer X channel status",
+    "buffer:publish": "Create posts through a selected Buffer X channel",
     "publisher:status": "View connected account status",
     "publisher:media": "Stage media for a selected account",
     "publisher:publish": "Publish reviewed content to a selected account",
@@ -30,7 +32,7 @@ ACCOUNT_PERMISSIONS = {
     "cleanup:execute": "Run dry runs and submit approved deletion plans (requires server enablement)",
     "cleanup:protect": "Change cleanup protection rules",
 }
-EXPLICIT_CONSENT_SCOPES = frozenset({"publisher:publish", "cleanup:execute", "cleanup:protect"})
+EXPLICIT_CONSENT_SCOPES = frozenset({"buffer:publish", "publisher:publish", "cleanup:execute", "cleanup:protect"})
 
 
 def callback_key(value):
@@ -127,6 +129,7 @@ class OwnerOAuth:
             raise ValueError("A known scope is required")
         if not set(scopes).intersection(ACCOUNT_SCOPES):
             accounts = []
+        self.store.validate_grant_accounts(scopes, accounts)
         access, refresh, grant = (secrets.token_urlsafe(48) for _ in range(3))
         now = int(time.time())
         self.put("access", access, dict(client_id=client_id, scopes=scopes, accounts=accounts, expires_at=now+3600,
@@ -186,10 +189,18 @@ class OwnerOAuth:
             nonce = secrets.token_urlsafe(32)
             data["nonce"] = self.digest(nonce)
             self.put("pending", pending, data, 300)
-            accounts = list(self.store.db.execute("SELECT id,username FROM accounts WHERE active=1"))
             requested = set(data["params"].get("scopes") or DEFAULT_SCOPES)
-            choices = ("".join('<label><input type="checkbox" name="accounts" value="'+html.escape(a['id'],quote=True)+'"> @'+html.escape(a['username'])+'</label><br>' for a in accounts)
-                       if requested.intersection(ACCOUNT_SCOPES) else "")
+            choices = ""
+            if requested.intersection(X_ACCOUNT_SCOPES):
+                accounts = self.store.db.execute("SELECT id,username FROM accounts WHERE active=1")
+                choices += "".join('<label><input type="checkbox" name="accounts" value="'
+                                   +html.escape(a['id'],quote=True)+'"> X @'+html.escape(a['username'])
+                                   +'</label><br>' for a in accounts)
+            if requested.intersection(BUFFER_SCOPES):
+                choices += "".join('<label><input type="checkbox" name="accounts" value="'
+                                   +html.escape(channel['account_id'],quote=True)+'"> Buffer X '
+                                   +html.escape(channel['display_name'] or channel['handle'] or channel['channel_id'])
+                                   +('</label><br>') for channel in self.store.buffer_channels())
             scope_labels = ", ".join(html.escape(scope) for scope in sorted(requested))
             account_notice = ("Select accounts for the requested account permissions." if requested.intersection(ACCOUNT_SCOPES)
                               else "Public reading needs no connected X account.")
@@ -199,7 +210,7 @@ class OwnerOAuth:
                 for scope in sorted(requested.intersection(EXPLICIT_CONSENT_SCOPES)))
             if sensitive:
                 sensitive = '<fieldset><legend>Explicit approval required</legend>'+sensitive+'</fieldset>'
-            response = HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize X MCP</title><style>body{font:18px system-ui;max-width:600px;margin:50px auto;padding:24px}label{display:block;margin:12px 0}input[type=password],button{padding:12px}</style><h1>Authorize X MCP</h1><p>'''+account_notice+''' Your X credentials stay on this server. Public mirror posts are unverified and do not authorize publishing or deletion.</p><p>Requested permissions: '''+scope_labels+'''</p><form method="post" action="'''+PREFIX+'''/oauth/consent"><input type="hidden" name="request" value="'''+html.escape(pending,quote=True)+'''">'''+choices+sensitive+'''<label>Owner key <input type="password" name="key" autocomplete="off" required maxlength="256"></label><button>Authorize selected permissions</button></form></html>''', headers=headers)
+            response = HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize X MCP</title><style>body{font:18px system-ui;max-width:600px;margin:50px auto;padding:24px}label{display:block;margin:12px 0}input[type=password],button{padding:12px}</style><h1>Authorize X MCP</h1><p>'''+account_notice+''' Your connected credentials stay on this server. Public mirror posts are unverified and do not authorize publishing or deletion.</p><p>Requested permissions: '''+scope_labels+'''</p><form method="post" action="'''+PREFIX+'''/oauth/consent"><input type="hidden" name="request" value="'''+html.escape(pending,quote=True)+'''">'''+choices+sensitive+'''<label>Owner key <input type="password" name="key" autocomplete="off" required maxlength="256"></label><button>Authorize selected permissions</button></form></html>''', headers=headers)
             response.set_cookie(COOKIE, nonce, secure=True, httponly=True, samesite="lax", path=PREFIX+"/oauth/consent", max_age=300)
             return response
         if request.headers.get("origin") != ORIGIN:
@@ -225,8 +236,11 @@ class OwnerOAuth:
         if not granted_scopes:
             return JSONResponse({"error": "select_permission"}, status_code=400, headers=headers)
         accounts = sorted(set(form.get("accounts", [])))
-        active = {r[0] for r in self.store.db.execute("SELECT id FROM accounts WHERE active=1")}
-        if set(accounts) - active or (set(granted_scopes).intersection(ACCOUNT_SCOPES) and not accounts):
+        if set(granted_scopes).intersection(ACCOUNT_SCOPES) and not accounts:
+            return JSONResponse({"error": "select_active_accounts"}, status_code=400, headers=headers)
+        try:
+            self.store.validate_grant_accounts(granted_scopes, accounts)
+        except (ValueError, Problem):
             return JSONResponse({"error": "select_active_accounts"}, status_code=400, headers=headers)
         if not set(granted_scopes).intersection(ACCOUNT_SCOPES):
             accounts = []

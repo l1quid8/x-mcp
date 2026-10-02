@@ -21,6 +21,7 @@ from .pairing import verify_and_store
 
 BASE = PREFIX + "/connect"
 CLIENT_SETTINGS = BASE + "/client-settings"
+BUFFER_SETTINGS = BASE + "/buffer"
 COOKIE = "__Secure-xmcp-connect"
 WORKER = os.environ.get("X_MCP_BROWSER_WORKER_URL", "").rstrip("/")
 VIEW = os.environ.get("X_MCP_BROWSER_VIEW_URL", "").rstrip("/")
@@ -75,7 +76,7 @@ class BrowserConnect:
     async def page(self, request):
         login = self.login(request)
         if not login:
-            return HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}</style><h1>Connect X account</h1><p>This opens an X browser on your own server. Your X login is entered into that browser.</p><form method="post" action="'''+BASE+'''/login"><label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label><button>Continue</button></form></html>''', headers=self.headers())
+            return HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}</style><h1>Connect X account</h1><p>For an X account already linked in Buffer, use <a href="'''+BUFFER_SETTINGS+'''">Connect through Buffer</a>. For a direct X session on your own server, continue below.</p><form method="post" action="'''+BASE+'''/login"><label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label><button>Continue</button></form></html>''', headers=self.headers())
         data = self.oauth.get("connect-login", login)
         csrf = html.escape(data["csrf"], quote=True)
         rows = list(self.store.db.execute("SELECT id,username FROM accounts WHERE active=1 ORDER BY username"))
@@ -97,7 +98,65 @@ class BrowserConnect:
                        '<button>End previous sign-in</button></form>')
         else:
             content = '<form method="post" action="'+BASE+'/start"><input type="hidden" name="csrf" value="'+csrf+'"><label>Account <select name="account">'+choices+'</select></label><button>Open X sign-in</button></form>'
+        content += '<p><a href="'+BUFFER_SETTINGS+'">Connect through Buffer</a> using an X account already linked in Buffer.</p>'
         return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:1000px;margin:24px auto;padding:24px}label,button{font:inherit;margin:12px}</style><h1>Connect X account</h1>'+content+'</html>', headers=self.headers())
+
+    async def buffer_page(self, request):
+        login = self.login(request)
+        if not login:
+            content = ('<p>Connect your X account in Buffer first, then enter your server owner key here.</p>'
+                       '<form method="post" action="'+BASE+'/login"><input type="hidden" name="return_to" value="buffer">'
+                       '<label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label>'
+                       '<button>Continue</button></form>')
+        else:
+            csrf = html.escape(self.oauth.get("connect-login", login)["csrf"], quote=True)
+            channels = self.store.buffer_channels()
+            if channels:
+                listed = '<ul>'+''.join('<li>'+html.escape(c["display_name"] or c["handle"] or c["channel_id"])+
+                                         ' ('+html.escape(c["account_id"])+')</li>' for c in channels)+'</ul>'
+            else:
+                listed = '<p>No Buffer X channel is configured yet.</p>'
+            content = ('<p>Connect X to Buffer in your own browser, then <a href="https://publish.buffer.com/settings/api">create a Buffer API key</a> and paste it here. '
+                       'The key is encrypted on this server and is never sent to MCP clients. '
+                       'Choose only account-read, posts-read and posts-write permissions for this key.</p>'
+                       +listed+
+                       '<form method="post" action="'+BUFFER_SETTINGS+'"><input type="hidden" name="csrf" value="'+csrf+'">'
+                       '<label>Buffer API key <input type="password" name="api_key" required maxlength="2048" autocomplete="off" style="width:100%;box-sizing:border-box"></label>'
+                       '<button>Connect Buffer X channels</button></form>')
+        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect through Buffer</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}label{display:block;margin:20px 0}</style><h1>Connect through Buffer</h1>'+content+'</html>', headers=self.headers())
+
+    async def buffer_save(self, request):
+        login = self.login(request)
+        if not login or request.headers.get("origin") != ORIGIN:
+            return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
+        try:
+            form = await self.form(request)
+        except ValueError:
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers())
+        data = self.oauth.get("connect-login", login)
+        if not hmac.compare_digest(form.get("csrf", ""), data["csrf"]):
+            return JSONResponse({"error": "invalid_csrf"}, status_code=403, headers=self.headers())
+        key = form.get("api_key", "").strip()
+        if not 16 <= len(key) <= 2048 or any(c.isspace() for c in key):
+            return HTMLResponse("Invalid Buffer API key format.", status_code=400, headers=self.headers())
+        from .buffer_api import BufferAPI
+        api = BufferAPI(key)
+        try:
+            found = await api.list_channels()
+        except Exception:
+            return HTMLResponse("Buffer could not verify this key or list its X channels. Check the key permissions and try again.",
+                                status_code=400, headers=self.headers())
+        finally:
+            await api.close()
+        channels = [{"account_id": "buffer:"+c["id"], "channel_id": c["id"],
+                     "display_name": c.get("name") or "", "handle": c.get("username") or ""}
+                    for c in found if c.get("service") in {"twitter", "x"}
+                    and not c.get("isDisconnected") and not c.get("isLocked")]
+        if not channels:
+            return HTMLResponse("Buffer returned no connected X channels for this key.", status_code=400, headers=self.headers())
+        self.store.save_buffer_key(key)
+        self.store.save_buffer_channels(channels)
+        return RedirectResponse(BUFFER_SETTINGS, status_code=303, headers=self.headers())
 
     async def client_settings(self, request):
         login = self.login(request)
@@ -128,7 +187,8 @@ class BrowserConnect:
             return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
         login, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         self.oauth.put("connect-login", login, {"csrf": csrf}, 900)
-        destination = CLIENT_SETTINGS if form.get("return_to") == "client-settings" else BASE
+        destination = (CLIENT_SETTINGS if form.get("return_to") == "client-settings" else
+                       BUFFER_SETTINGS if form.get("return_to") == "buffer" else BASE)
         response = RedirectResponse(destination, status_code=303, headers=self.headers())
         response.set_cookie(COOKIE, login, secure=True, httponly=True, samesite="strict", path=BASE, max_age=900)
         return response
@@ -276,6 +336,8 @@ class BrowserConnect:
 def browser_connect_routes(flow):
     return [Route(BASE, flow.page, methods=["GET"]),
             Route(CLIENT_SETTINGS, flow.client_settings, methods=["GET"]),
+            Route(BUFFER_SETTINGS, flow.buffer_page, methods=["GET"]),
+            Route(BUFFER_SETTINGS, flow.buffer_save, methods=["POST"]),
             Route(BASE+"/login", flow.authorize, methods=["POST"]),
             Route(BASE+"/{action}", flow.action, methods=["POST"]),
             Route(BASE+"/view/{path:path}", flow.view, methods=["GET"]),
