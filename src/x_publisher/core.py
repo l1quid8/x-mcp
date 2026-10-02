@@ -28,12 +28,18 @@ if not re.fullmatch(r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*", PREFIX):
     raise ValueError("X_MCP_PREFIX must be a non-root URL path without a trailing slash")
 RESOURCE = ORIGIN + PREFIX + "/mcp"
 ISSUER = ORIGIN + PREFIX + "/oauth"
-DEFAULT_SCOPES = ["x:read"]
 X_ACCOUNT_SCOPES = ["publisher:status", "publisher:media", "publisher:publish",
                     "cleanup:read", "cleanup:plan", "cleanup:execute", "cleanup:protect"]
 BUFFER_SCOPES = ["buffer:status", "buffer:publish"]
 ACCOUNT_SCOPES = X_ACCOUNT_SCOPES + BUFFER_SCOPES
-SCOPES = DEFAULT_SCOPES + ACCOUNT_SCOPES
+SCOPES = ["x:read"] + ACCOUNT_SCOPES
+_default_scope_setting = os.environ.get("X_MCP_DEFAULT_SCOPES", "x:read").strip()
+if _default_scope_setting == "all":
+    DEFAULT_SCOPES = SCOPES
+else:
+    DEFAULT_SCOPES = _default_scope_setting.split()
+    if not DEFAULT_SCOPES or set(DEFAULT_SCOPES) - set(SCOPES):
+        raise ValueError("X_MCP_DEFAULT_SCOPES must be 'all' or a space-separated list of supported scopes")
 TERMINAL = {"succeeded", "failed", "partial", "unknown"}
 
 
