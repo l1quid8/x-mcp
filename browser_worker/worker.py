@@ -29,11 +29,14 @@ class Worker:
 
     def note(self, kind, url="", status=None):
         host = urlsplit(url).hostname or ""
-        if kind != "page_error" and not (host == "x.com" or host.endswith(".x.com")
-                                         or host == "twimg.com" or host.endswith(".twimg.com")):
+        first_party = (host == "x.com" or host.endswith(".x.com")
+                       or host == "twimg.com" or host.endswith(".twimg.com"))
+        if kind != "page_error" and not first_party and kind != "request_failed" and (status is None or status < 400):
             return
         path = urlsplit(url).path
-        area = "onboarding" if "/onboarding/" in path else "graphql" if "/graphql/" in path else "other"
+        area = ("third_party" if not first_party and kind != "page_error" else
+                "onboarding" if "/onboarding/" in path else "graphql" if "/graphql/" in path else "other")
+        # Keep only coarse categories and status; never retain URLs, inputs, cookies, or response bodies.
         event = {"kind": kind, "area": area, "seconds": int(time.monotonic() - self.started)}
         if status is not None:
             event["status"] = status
@@ -49,7 +52,6 @@ class Worker:
                     pass
         self.context = self.browser = self.playwright = self.session = None
         self.started = 0.0
-        self.events = []
 
     async def expire(self):
         while True:
@@ -65,6 +67,9 @@ class Worker:
             async with self.lock:
                 await self.stop()
             return JSONResponse({"state": "closed"})
+        if request.url.path == "/diagnostics":
+            async with self.lock:
+                return JSONResponse({"active": bool(self.session), "events": self.events})
         if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
             return JSONResponse({"error": "invalid_payload"}, status_code=400)
         try:
@@ -84,6 +89,7 @@ class Worker:
                 if self.session:
                     return JSONResponse({"error": "busy"}, status_code=409)
                 try:
+                    self.events = []
                     self.playwright = await async_playwright().start()
                     self.browser = await self.playwright.chromium.launch(headless=False, args=["--no-first-run", "--disable-dev-shm-usage", "--window-size=1280,800"])
                     self.context = await self.browser.new_context(accept_downloads=False, viewport={"width": 1280, "height": 720})
@@ -101,8 +107,6 @@ class Worker:
                 return JSONResponse({"state": "ready"})
             if self.session != session:
                 return JSONResponse({"error": "session_unavailable"}, status_code=404)
-            if request.url.path == "/diagnostics":
-                return JSONResponse({"events": self.events})
             if request.url.path == "/finish":
                 try:
                     cookies = {c["name"]: c["value"] for c in await self.context.cookies("https://x.com")
