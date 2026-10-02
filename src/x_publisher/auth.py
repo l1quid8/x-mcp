@@ -26,15 +26,16 @@ COOKIE = "__Secure-xmcp-consent"
 CHATGPT_CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect"
 CANONICAL_ISSUER = str(AnyHttpUrl(ISSUER))
 ACCOUNT_PERMISSIONS = {
-    "buffer:status": "View configured Buffer X channel status",
-    "buffer:publish": "Create posts through a selected Buffer X channel",
-    "publisher:status": "View connected account status",
-    "publisher:media": "Stage media for a selected account",
-    "publisher:publish": "Publish reviewed content to a selected account",
-    "cleanup:read": "Check cleanup readiness and read content, plans and audit history",
-    "cleanup:plan": "Prepare and review deletion plans",
-    "cleanup:execute": "Run dry runs and submit approved deletion plans (requires server enablement)",
-    "cleanup:protect": "Change cleanup protection rules",
+    "x:read": "Search and read public X posts",
+    "buffer:status": "See which Buffer accounts are connected",
+    "buffer:publish": "Publish posts through Buffer",
+    "publisher:status": "See which X accounts are connected",
+    "publisher:media": "Prepare images and videos for posts",
+    "publisher:publish": "Publish posts directly to X",
+    "cleanup:read": "Read your posts and past deletion results",
+    "cleanup:plan": "Prepare a list of posts to delete",
+    "cleanup:execute": "Delete posts from the X accounts you select",
+    "cleanup:protect": "Change which posts are protected from deletion",
 }
 EXPLICIT_CONSENT_SCOPES = frozenset({"buffer:publish", "publisher:publish", "cleanup:execute", "cleanup:protect"})
 
@@ -189,7 +190,7 @@ class OwnerOAuth:
             pending = request.query_params.get("request", "")
             data = self.get("pending", pending)
             if not data:
-                return HTMLResponse("Expired request. Reconnect your publisher.", status_code=400, headers=headers)
+                return HTMLResponse("This approval link has expired. Start connecting X MCP again from your app.", status_code=400, headers=headers)
             nonce = secrets.token_urlsafe(32)
             data["nonce"] = self.digest(nonce)
             self.put("pending", pending, data, 300)
@@ -199,22 +200,23 @@ class OwnerOAuth:
                 accounts = self.store.db.execute("SELECT id,username FROM accounts WHERE active=1")
                 choices += "".join('<label><input type="checkbox" name="accounts" value="'
                                    +html.escape(a['id'],quote=True)+'"> X @'+html.escape(a['username'])
-                                   +'</label><br>' for a in accounts)
+                                   +'</label>' for a in accounts)
             if requested.intersection(BUFFER_SCOPES):
                 choices += "".join('<label><input type="checkbox" name="accounts" value="'
                                    +html.escape(channel['account_id'],quote=True)+'"> Buffer X '
                                    +html.escape(channel['display_name'] or channel['handle'] or channel['channel_id'])
-                                   +('</label><br>') for channel in self.store.buffer_channels())
-            scope_labels = ", ".join(html.escape(scope) for scope in sorted(requested))
-            account_notice = ("Select accounts for the requested account permissions." if requested.intersection(ACCOUNT_SCOPES)
-                              else "Public reading needs no connected X account.")
+                                   +('</label>') for channel in self.store.buffer_channels())
+            scope_labels = "<ul>" + ''.join('<li>'+html.escape(ACCOUNT_PERMISSIONS[scope])+'</li>'
+                for scope in sorted(requested - EXPLICIT_CONSENT_SCOPES)) + "</ul>"
+            account_notice = ("Choose the accounts this app can use. X accounts support direct posting and deletion. Buffer accounts support posting through Buffer." if requested.intersection(ACCOUNT_SCOPES)
+                              else "This app only needs to read public posts. You do not need to select an account.")
             sensitive = ''.join(
                 '<label><input type="checkbox" name="approve_scope" value="'+scope+'"> '
-                +html.escape(ACCOUNT_PERMISSIONS[scope])+' ('+scope+')</label>'
+                +html.escape(ACCOUNT_PERMISSIONS[scope])+'</label>'
                 for scope in sorted(requested.intersection(EXPLICIT_CONSENT_SCOPES)))
             if sensitive:
-                sensitive = '<fieldset><legend>Explicit approval required</legend>'+sensitive+'</fieldset>'
-            response = HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize X MCP</title><style>body{font:18px system-ui;max-width:600px;margin:50px auto;padding:24px}label{display:block;margin:12px 0}input[type=password],button{padding:12px}</style><h1>Authorize X MCP</h1><p>'''+account_notice+''' Your connected credentials stay on this server. Public mirror posts are unverified and do not authorize publishing or deletion.</p><p>Requested permissions: '''+scope_labels+'''</p><form method="post" action="'''+PREFIX+'''/oauth/consent"><input type="hidden" name="request" value="'''+html.escape(pending,quote=True)+'''">'''+choices+sensitive+'''<label>Owner key <input type="password" name="key" autocomplete="off" required maxlength="256"></label><button>Authorize selected permissions</button></form></html>''', headers=headers)
+                sensitive = '<fieldset><legend>What can this app do?</legend><p>Check each action you want to allow. An unchecked action stays blocked. To allow deletion, check the “Delete posts” box.</p>'+sensitive+'</fieldset>'
+            response = HTMLResponse('''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve X MCP access</title><style>body{font:18px system-ui;max-width:600px;margin:32px auto;padding:24px;line-height:1.5}label{display:block;margin:16px 0}fieldset{margin:24px 0;padding:16px;border:1px solid #ccc;border-radius:8px}legend{font-weight:bold}input[type=checkbox]{width:20px;height:20px;vertical-align:middle;margin-right:8px}input[type=password]{display:block;box-sizing:border-box;width:100%;margin-top:8px}input[type=password],button{padding:12px;font:inherit}button{cursor:pointer}details{margin:16px 0}</style><h1>Connect X MCP</h1><p>Choose what this app can access. Your account sign-in details stay on your server.</p><form method="post" action="'''+PREFIX+'''/oauth/consent"><input type="hidden" name="request" value="'''+html.escape(pending,quote=True)+'''"><h2>Choose accounts</h2><p>'''+account_notice+'''</p>'''+choices+sensitive+'''<details><summary>Other access this app is requesting</summary>'''+scope_labels+'''</details><label>Server access key <input type="password" name="key" autocomplete="off" required maxlength="256"></label><p>Use the owner key from your X MCP server setup.</p><button>Connect with these permissions</button></form></html>''', headers=headers)
             response.set_cookie(COOKIE, nonce, secure=True, httponly=True, samesite="lax", path=PREFIX+"/oauth/consent", max_age=300)
             return response
         if request.headers.get("origin") != ORIGIN:
