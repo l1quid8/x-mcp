@@ -21,6 +21,7 @@ services:
       context: .
       dockerfile: browser_worker/Dockerfile
     restart: unless-stopped
+    init: true
     environment:
       X_MCP_BROWSER_WORKER_TOKEN: ${X_MCP_BROWSER_WORKER_TOKEN:?Generate a random token in .env}
     tmpfs:
