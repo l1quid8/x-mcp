@@ -53,6 +53,43 @@ def claim(store, token):
     return dict(row)
 
 
+async def verify_and_store(store, backend_factory, account_locks, cookies, *, expected_user=None,
+                           expected_id=None, tier=None, record_failure=None):
+    """Verify authenticated X identity before replacing an encrypted session."""
+    backend = backend_factory(cookies)
+    try:
+        async with asyncio.timeout(90):
+            identity = await backend.identity()
+        aid, username = identity["id"], identity["username"]
+        if (not isinstance(aid, str) or not aid.isdigit() or not isinstance(username, str)
+                or not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username)
+                or (expected_user and username.lower() != expected_user.lower())
+                or (expected_id and aid != expected_id)):
+            raise Problem("account_mismatch", "Signed-in X identity does not match the selected account")
+        lock = account_locks.setdefault(aid, asyncio.Lock())
+        if lock.locked():
+            raise Problem("account_busy", "This account is publishing; reconnect after that operation finishes")
+        async with lock:
+            existing = store.db.execute("SELECT capabilities FROM accounts WHERE id=?", (aid,)).fetchone()
+            if existing and tier is None:
+                caps = json.loads(existing[0])
+            else:
+                caps = capability_defaults(tier or "unknown")
+                if existing:
+                    caps["verified_formats"] = json.loads(existing[0]).get("verified_formats", {})
+            store.save_account(aid, username, backend.session_snapshot(), caps)
+        return identity
+    except Exception as exc:
+        if record_failure:
+            record_failure(backend, exc)
+        raise
+    finally:
+        try:
+            await backend.close()
+        except Exception:
+            pass
+
+
 class SessionImporter:
     def __init__(self, store, backend_factory, account_locks):
         schema(store)
@@ -82,7 +119,6 @@ class SessionImporter:
             return response({"error": "invalid_pairing"}, 401)
         if self.busy:
             return response({"error": "import_busy", "message": "Another account import is in progress; try again shortly"}, 429)
-        backend = None
         try:
             grant = claim(self.store, parts[1])
             self.busy = True
@@ -103,46 +139,21 @@ class SessionImporter:
                 or not all(isinstance(v, str) and 0 < len(v) <= 4096 for v in cookies.values())
                 or not cookies.get("auth_token") or not cookies.get("ct0")):
                 raise Problem("invalid_payload", "Missing or invalid X session cookies")
-            backend = self.backend_factory(cookies)
-            async with asyncio.timeout(90):
-                identity = await backend.identity()
+            identity = await verify_and_store(self.store, self.backend_factory, self.account_locks, cookies,
+                expected_user=grant["username"], expected_id=grant["account_id"], tier=grant["tier"],
+                record_failure=lambda backend, exc: self.record_failure(grant, backend, exc))
             aid, username = identity["id"], identity["username"]
-            if (not isinstance(aid, str) or not aid.isdigit() or not isinstance(username, str)
-                or username.lower() != grant["username"]
-                or (grant["account_id"] and aid != grant["account_id"])):
-                raise Problem("account_mismatch", "Signed-in X identity does not match the account selected for pairing")
-            lock = self.account_locks.setdefault(aid, asyncio.Lock())
-            if lock.locked():
-                raise Problem("account_busy", "This account is publishing; reconnect after the operation finishes")
-            async with lock:
-                existing = self.store.db.execute("SELECT capabilities FROM accounts WHERE id=?", (aid,)).fetchone()
-                caps = capability_defaults(grant["tier"])
-                if existing:
-                    previous = json.loads(existing[0])
-                    caps["verified_formats"] = previous.get("verified_formats", {})
-                self.store.save_account(aid, username, backend.session_snapshot(), caps)
             return response({"account_id": aid, "username": username, "session_verified": True,
                 "tier_source": "owner_attested", "publishing_verified": False,
                 "message": "Session stored encrypted. Existing client account grants are unchanged."}, 200)
         except Problem as exc:
-            if backend is not None:
-                self.record_failure(grant, backend, exc)
             return response({"error": exc.code, "message": exc.message}, 401 if exc.code == "invalid_pairing" else 400)
         except (ValueError, TypeError, KeyError) as exc:
-            if backend is not None:
-                self.record_failure(grant, backend, exc)
             return response({"error": "invalid_session", "message": "Session could not be verified; reconnect using the helper"}, 400)
         except Exception as exc:
-            if backend is not None:
-                self.record_failure(grant, backend, exc)
             code, _ = classify(exc)
             return response({"error": code, "message": "X session verification failed. Resolve any X challenge and reconnect; no session was imported."}, 400)
         finally:
             # Only the request that claimed the grant can release the import slot.
             if 'grant' in locals():
                 self.busy = False
-            if backend is not None:
-                try:
-                    await backend.close()
-                except Exception:
-                    pass

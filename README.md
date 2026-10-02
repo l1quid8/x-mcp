@@ -29,7 +29,8 @@ cleanup reasons are treated as untrusted data.
 
 ## Requirements
 
-- Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
+- Docker with Compose for the browser-only setup, or Python 3.11+ and
+  [uv](https://docs.astral.sh/uv/) for a manual installation.
 - Your own HTTPS hostname and reverse proxy. The Python server listens only on
   `127.0.0.1:8770` by default; the proxy must forward your chosen path prefix.
 - Persistent private state, an encryption key, and an owner key. Never commit
@@ -42,6 +43,38 @@ hostname you control. **There is no default remote destination:** the server
 and account helpers refuse to start without `X_MCP_ORIGIN`.
 
 ## Install and configure
+
+### Browser-only account setup with Docker Compose
+
+This is the recommended route for a new self-hosted installation. It runs X
+MCP and a disposable browser service on your VPS. Nothing is installed on the
+computer from which you connect an X account.
+
+```sh
+git clone https://github.com/l1quid8/x-mcp.git
+cd x-mcp
+python3 docker/configure.py https://mcp.your-domain.com
+docker compose up -d --build
+docker compose exec app cat /var/lib/x-mcp/keys/owner-key
+```
+
+Save the owner key privately. The setup command creates a private `.env` with a
+random browser-worker token; both files are excluded from Git. Compose stores
+encrypted sessions and keys in a persistent private volume. The only published
+container port is `127.0.0.1:8770`; place your own HTTPS reverse proxy in front
+of it. Forward `/x-mcp/*` and the OAuth discovery paths under
+`/.well-known/oauth-authorization-server/x-mcp/*` and
+`/.well-known/oauth-protected-resource/x-mcp/*`. The browser stream at
+`/x-mcp/connect/ws` requires WebSocket upgrade forwarding. Do not publish the
+browser service's ports. See [browser connection details](docs/BROWSER_CONNECT.md)
+for a proxy example and troubleshooting.
+
+Then open `https://mcp.your-domain.com/x-mcp/connect` on your own computer,
+enter the owner key, and sign in to X in the temporary browser shown there.
+The browser runs on your VPS, and the session is stored encrypted there after
+identity verification. You can close the page and your computer afterward.
+
+### Manual Python service
 
 ```sh
 git clone https://github.com/l1quid8/x-mcp.git
@@ -106,6 +139,17 @@ Configured mirror URLs must be public HTTPS hosts; the reader blocks private and
 loopback targets to prevent server-side request forgery.
 
 ## Connect an account
+
+The browser-only method above is the primary setup path. It starts a fresh X
+login on your server. Select **New account** or an existing account to reconnect,
+complete X sign-in, and choose **Finish connection**. This does not publish a
+post or grant an MCP client access to the account. Existing MCP clients need a
+new account grant before they can use newly connected accounts.
+
+The browser extension and local helper remain optional alternatives for a
+manual Python deployment that has no browser worker. The extension can reuse
+the X session in an already signed-in local browser; the local helper opens a
+new browser on the user's computer.
 
 The [browser extension template](browser-extension/README.md) can be generated
 for your exact server origin, then loaded as an unpacked Brave/Chromium

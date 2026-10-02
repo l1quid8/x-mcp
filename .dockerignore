@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.env.*
+.tmp*
+state
+media
+*owner-key*
+*encryption-key*
+*cookies*.json
+__pycache__
+.pytest_cache
+*.pyc
+tests
+browser-extension
+connect

@@ -30,6 +30,7 @@ from .engine import Publisher
 from .media import MediaStore
 from .pairing import SessionImporter
 from .pairing_web import browser_pairing_routes
+from .browser_connect import BrowserConnect, browser_connect_routes
 from .extension_origin import ExtensionCORS
 from .cleanup import Cleanup
 from .cleanup_models import ProposedAction, ProtectionPolicy
@@ -343,11 +344,13 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
     @asynccontextmanager
     async def lifespan(app):
         store.recover()
+        await browser_connect.recover()
         cleaner = asyncio.create_task(cleanup_loop())
         async with transport.router.lifespan_context(transport):
             try:
                 yield
             finally:
+                await browser_connect.recover()
                 cleaner.cancel()
                 for task in list(background):
                     task.cancel()
@@ -358,13 +361,15 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
                 oauth.db.close()
 
     importer = SessionImporter(store, backend_factory, publisher.account_locks)
+    browser_connect = BrowserConnect(oauth, store, backend_factory, publisher.account_locks)
     app = Starlette(routes=[Route(PREFIX+"/session-import", importer.__call__, methods=["POST"]),
-        Route(PREFIX+"/x-oauth/callback", x_oauth_callback, methods=["GET"])] + browser_pairing_routes(oauth) + oauth_routes(oauth)+[Mount("/", Authentication(private, store, oauth))], lifespan=lifespan)
+        Route(PREFIX+"/x-oauth/callback", x_oauth_callback, methods=["GET"])] + browser_connect_routes(browser_connect) + browser_pairing_routes(oauth) + oauth_routes(oauth)+[Mount("/", Authentication(private, store, oauth))], lifespan=lifespan)
     app.add_middleware(ExtensionCORS)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlsplit(ORIGIN).hostname, "127.0.0.1"])
     app.state.store, app.state.publisher, app.state.media, app.state.oauth = store, publisher, media, oauth
     app.state.cleanup = cleanup
     app.state.read_pool = read_pool
+    app.state.browser_connect = browser_connect
     app.state.mcp_server = server
     return app
 
@@ -373,9 +378,9 @@ def main():
     import logging
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    uvicorn.run(create_app(), host="127.0.0.1", port=int(os.environ.get("X_MCP_PORT", "8770")),
+    uvicorn.run(create_app(), host=os.environ.get("X_MCP_HOST", "127.0.0.1"), port=int(os.environ.get("X_MCP_PORT", "8770")),
                 access_log=False, log_level="warning",
-                proxy_headers=False, limit_concurrency=16, timeout_keep_alive=10, ws="none")
+                proxy_headers=False, limit_concurrency=16, timeout_keep_alive=10, ws="auto")
 
 
 if __name__ == "__main__":

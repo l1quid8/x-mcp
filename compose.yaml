@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${X_MCP_BIND_PORT:-8770}:8770"
+    environment:
+      X_MCP_ORIGIN: ${X_MCP_ORIGIN:?Set your own HTTPS origin in .env}
+      X_MCP_PREFIX: ${X_MCP_PREFIX:-/x-mcp}
+      X_MCP_BROWSER_WORKER_URL: http://browser:8785
+      X_MCP_BROWSER_VIEW_URL: http://browser:6080
+      X_MCP_BROWSER_WORKER_TOKEN: ${X_MCP_BROWSER_WORKER_TOKEN:?Generate a random token in .env}
+    volumes:
+      - x_mcp_private:/var/lib/x-mcp
+    depends_on:
+      browser:
+        condition: service_healthy
+
+  browser:
+    build:
+      context: .
+      dockerfile: browser_worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      X_MCP_BROWSER_WORKER_TOKEN: ${X_MCP_BROWSER_WORKER_TOKEN:?Generate a random token in .env}
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    shm_size: 256m
+    read_only: true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8785/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  x_mcp_private:
