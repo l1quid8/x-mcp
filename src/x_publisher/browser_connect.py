@@ -22,6 +22,7 @@ from .pairing import verify_and_store
 BASE = PREFIX + "/connect"
 CLIENT_SETTINGS = BASE + "/client-settings"
 BUFFER_SETTINGS = BASE + "/buffer"
+BUFFER_FALLBACK_SETTINGS = BUFFER_SETTINGS + "/fallback"
 COOKIE = "__Secure-xmcp-connect"
 WORKER = os.environ.get("X_MCP_BROWSER_WORKER_URL", "").rstrip("/")
 VIEW = os.environ.get("X_MCP_BROWSER_VIEW_URL", "").rstrip("/")
@@ -116,13 +117,23 @@ class BrowserConnect:
                                          ' ('+html.escape(c["account_id"])+')</li>' for c in channels)+'</ul>'
             else:
                 listed = '<p>No Buffer X channel is configured yet.</p>'
+            checked = ' checked' if self.store.buffer_direct_fallback_enabled() else ''
             content = ('<p>Connect X to Buffer in your own browser, then <a href="https://publish.buffer.com/settings/api">create a Buffer API key</a> and paste it here. '
                        'The key is encrypted on this server and is never sent to MCP clients. '
                        'Choose only account-read, posts-read and posts-write permissions for this key.</p>'
                        +listed+
                        '<form method="post" action="'+BUFFER_SETTINGS+'"><input type="hidden" name="csrf" value="'+csrf+'">'
                        '<label>Buffer API key <input type="password" name="api_key" required maxlength="2048" autocomplete="off" style="width:100%;box-sizing:border-box"></label>'
-                       '<button>Connect Buffer X channels</button></form>')
+                       '<button>Connect Buffer X channels</button></form>'
+                       '<h2>Publishing backup</h2><p>When Buffer rejects a post because its API quota is exhausted, '
+                       'use an existing direct X session for the same verified X account. '
+                       'This applies to immediate posts only. Your MCP client must have permission to publish '
+                       'through both routes, and the direct X session must still work.</p>'
+                       '<form method="post" action="'+BUFFER_FALLBACK_SETTINGS+'">'
+                       '<input type="hidden" name="csrf" value="'+csrf+'">'
+                       '<label><input type="checkbox" name="enabled" value="1"'+checked+'>'
+                       ' Use same-account direct X session after Buffer quota rejection</label>'
+                       '<button>Save backup setting</button></form>')
         return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect through Buffer</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}label{display:block;margin:20px 0}</style><h1>Connect through Buffer</h1>'+content+'</html>', headers=self.headers())
 
     async def buffer_save(self, request):
@@ -148,14 +159,36 @@ class BrowserConnect:
                                 status_code=400, headers=self.headers())
         finally:
             await api.close()
-        channels = [{"account_id": "buffer:"+c["id"], "channel_id": c["id"],
-                     "display_name": c.get("name") or "", "handle": c.get("username") or ""}
-                    for c in found if c.get("service") in {"twitter", "x"}
-                    and not c.get("isDisconnected") and not c.get("isLocked")]
+        channels = []
+        for c in found:
+            if (c.get("service") not in {"twitter", "x"}
+                    or c.get("isDisconnected") or c.get("isLocked")):
+                continue
+            channel = {"account_id": "buffer:"+c["id"], "channel_id": c["id"],
+                       "display_name": c.get("name") or "", "handle": c.get("username") or ""}
+            if c.get("x_account_id"):
+                channel["x_account_id"] = c["x_account_id"]
+            channels.append(channel)
         if not channels:
             return HTMLResponse("Buffer returned no connected X channels for this key.", status_code=400, headers=self.headers())
         self.store.save_buffer_key(key)
         self.store.save_buffer_channels(channels)
+        return RedirectResponse(BUFFER_SETTINGS, status_code=303, headers=self.headers())
+
+    async def buffer_fallback_save(self, request):
+        login = self.login(request)
+        if not login or request.headers.get("origin") != ORIGIN:
+            return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
+        try:
+            form = await self.form(request)
+        except ValueError:
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers())
+        data = self.oauth.get("connect-login", login)
+        if not hmac.compare_digest(form.get("csrf", ""), data["csrf"]):
+            return JSONResponse({"error": "invalid_csrf"}, status_code=403, headers=self.headers())
+        if form.get("enabled", "") not in {"", "1"}:
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=self.headers())
+        self.store.set_buffer_direct_fallback_enabled(form.get("enabled") == "1")
         return RedirectResponse(BUFFER_SETTINGS, status_code=303, headers=self.headers())
 
     async def client_settings(self, request):
@@ -338,6 +371,7 @@ def browser_connect_routes(flow):
             Route(CLIENT_SETTINGS, flow.client_settings, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_page, methods=["GET"]),
             Route(BUFFER_SETTINGS, flow.buffer_save, methods=["POST"]),
+            Route(BUFFER_FALLBACK_SETTINGS, flow.buffer_fallback_save, methods=["POST"]),
             Route(BASE+"/login", flow.authorize, methods=["POST"]),
             Route(BASE+"/{action}", flow.action, methods=["POST"]),
             Route(BASE+"/view/{path:path}", flow.view, methods=["GET"]),

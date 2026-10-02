@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from x_publisher.app import create_app
+from x_publisher.admin import verified_buffer_channels
 from x_publisher.auth import OwnerOAuth
 from x_publisher.core import ORIGIN, RESOURCE, Problem
 from test_publisher import Backend, store
@@ -63,6 +64,51 @@ def test_channel_list_rejects_duplicate_and_mismatched_ids(store):
     with pytest.raises(ValueError, match="identifier"):
         store.save_buffer_channels([{**CHANNEL, "account_id": "1"}])
     assert store.buffer_channels() == []
+
+
+def test_verified_buffer_x_identity_is_stored_only_when_valid(store):
+    store.save_buffer_key("test-buffer-key")
+    with_id = {**CHANNEL, "x_account_id": "1234567890123456789"}
+    store.save_buffer_channels([with_id])
+    assert store.buffer_channel(CHANNEL["account_id"])["x_account_id"] == "1234567890123456789"
+    for invalid in ("0", "000123", "-1", "18446744073709551616", 123, None):
+        with pytest.raises(ValueError, match="Invalid X account ID"):
+            store.save_buffer_channels([{**CHANNEL, "x_account_id": invalid}])
+
+
+def test_direct_fallback_setting_defaults_off_and_requires_boolean(store):
+    assert store.buffer_direct_fallback_enabled() is False
+    store.set_buffer_direct_fallback_enabled(True)
+    assert store.buffer_direct_fallback_enabled() is True
+    with pytest.raises(ValueError, match="Boolean"):
+        store.set_buffer_direct_fallback_enabled("true")
+    store.set_buffer_direct_fallback_enabled(False)
+    assert store.buffer_direct_fallback_enabled() is False
+
+
+async def test_admin_sync_keeps_only_verified_x_identity(monkeypatch):
+    import x_publisher.buffer_api as buffer_module
+
+    class FakeBufferAPI:
+        def __init__(self, key):
+            assert key == "test-buffer-key"
+
+        async def list_channels(self):
+            return [
+                {"id": "channel_123", "service": "twitter", "name": "My account",
+                 "username": "example", "x_account_id": "1234567890123456789",
+                 "isDisconnected": False, "isLocked": False},
+                {"id": "channel_456", "service": "twitter", "name": "Other",
+                 "username": "other", "isDisconnected": False, "isLocked": False},
+            ]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(buffer_module, "BufferAPI", FakeBufferAPI)
+    channels = await verified_buffer_channels("test-buffer-key")
+    assert channels[0]["x_account_id"] == "1234567890123456789"
+    assert "x_account_id" not in channels[1]
 
 
 async def test_buffer_oauth_consent_selects_only_buffer_channels(store):

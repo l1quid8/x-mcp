@@ -203,6 +203,50 @@ async def test_interrupted_chunk_and_quota(store):
     assert (store.media_directory/u["media_id"]).stat().st_size == 0
 
 
+@pytest.mark.parametrize("content_length", [6, None])
+async def test_fallback_image_download_is_capped_and_leaves_no_staging_file(store, monkeypatch, content_length):
+    from x_publisher import media as media_module
+
+    class FakeResolver:
+        async def close(self):
+            pass
+
+    class FakeResponse:
+        status = 200
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        @property
+        def content_length(self):
+            return content_length
+        @property
+        def content(self):
+            return self
+        async def iter_chunked(self, size):
+            yield b"1234"
+            yield b"56"
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(media_module, "PublicResolver", FakeResolver)
+    monkeypatch.setattr(media_module.aiohttp, "TCPConnector", lambda **kwargs: object())
+    monkeypatch.setattr(media_module.aiohttp, "ClientSession", FakeSession)
+    with pytest.raises(Problem) as error:
+        await MediaStore(store).fetch("1", "https://images.example.com/large.png", max_bytes=5)
+    assert error.value.code == "media_too_large"
+    assert store.db.execute("SELECT count(*) FROM media").fetchone()[0] == 0
+    assert list(store.media_directory.iterdir()) == []
+
+
 @pytest.mark.parametrize("url",["http://example.com/a","https://localhost/a","https://127.0.0.1/a","https://[::1]/a","https://169.254.169.254/a","https://example.com:8080/a","https://user:password@example.com/a"])
 def test_reject_private_media(url):
     with pytest.raises(Problem):

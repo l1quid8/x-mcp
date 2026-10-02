@@ -8,6 +8,7 @@ import pytest
 
 from nitter_mcp.parse import Post
 from x_publisher.app import create_app
+from x_publisher.buffer_api import BufferError
 from test_publisher import Backend, rpc, store
 
 
@@ -128,3 +129,91 @@ async def test_buffer_publish_is_separate_from_direct_x_grants(store):
         assert receipt["structuredContent"]["delivery_status"] == "sent_reported_by_buffer"
         assert receipt["structuredContent"]["x_verified"] is False
         assert len(FakeBufferAPI.created) == 1
+
+
+async def test_direct_fallback_requires_owner_opt_in_and_both_account_grants(store):
+    store.save_buffer_key("buffer-test-key-123456789")
+    store.save_buffer_channels([{"account_id": "buffer:chan-1", "channel_id": "chan-1",
+                                 "display_name": "Same X account", "handle": "sameaccount",
+                                 "x_account_id": "1"}])
+    buffer_only = store.issue_token("buffer-only", ["buffer:publish"], ["buffer:chan-1"])
+    both = store.issue_token("both", ["buffer:publish", "publisher:publish"], ["buffer:chan-1", "1"])
+    with_media = store.issue_token("both-with-media", ["buffer:publish", "publisher:publish",
+                                                   "publisher:media"], ["buffer:chan-1", "1"])
+    app = create_app(store, "a" * 64, Backend, read_pool=FakeReadPool())
+
+    async def preview(client, token, image_urls=None):
+        response = (await rpc(client, token, "tools/call", {
+            "name": "preview_buffer_post", "arguments": {"account_id": "buffer:chan-1",
+                "text": "hello", "image_urls": image_urls or []}})).json()["result"]
+        assert not response.get("isError"), response
+        return response["structuredContent"]["direct_fallback_if_buffer_rate_limited"]
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test") as client:
+        assert not (await preview(client, both))["eligible"]
+        store.set_setting("buffer_direct_fallback_enabled", True)
+        assert not (await preview(client, buffer_only))["eligible"]
+        assert (await preview(client, both)) == {"eligible": True, "x_account_id": "1"}
+        assert not (await preview(client, both, ["https://images.example.com/one.jpg"]))["eligible"]
+        assert (await preview(client, with_media, ["https://images.example.com/one.jpg"]))["eligible"]
+
+
+async def test_buffer_quota_fallback_uses_only_dual_authorized_same_x_account(store):
+    store.save_buffer_key("buffer-test-key-123456789")
+    store.save_buffer_channels([{"account_id": "buffer:chan-1", "channel_id": "chan-1",
+                                 "display_name": "Same X account", "handle": "sameaccount",
+                                 "x_account_id": "1"}])
+    store.set_buffer_direct_fallback_enabled(True)
+    buffer_only = store.issue_token("buffer-only", ["buffer:status", "buffer:publish"], ["buffer:chan-1"])
+    dual = store.issue_token("dual", ["buffer:status", "buffer:publish", "publisher:publish"],
+                             ["buffer:chan-1", "1"])
+    Backend.calls = []
+    Backend.failure = None
+
+    class QuotaBufferAPI:
+        creates = 0
+
+        def __init__(self, key):
+            assert key == "buffer-test-key-123456789"
+
+        async def create_post(self, *args):
+            type(self).creates += 1
+            raise BufferError("rate_limited", "Buffer API quota reached.", definite=True)
+
+        async def close(self):
+            pass
+
+    app = create_app(store, "a" * 64, Backend, read_pool=FakeReadPool(),
+                     buffer_api_factory=QuotaBufferAPI)
+
+    async def publish(client, token, key):
+        preview = (await rpc(client, token, "tools/call", {
+            "name": "preview_buffer_post", "arguments": {"account_id": "buffer:chan-1",
+                "text": "hello via fallback"}})).json()["result"]
+        assert not preview.get("isError"), preview
+        posted = (await rpc(client, token, "tools/call", {
+            "name": "publish_buffer_post", "arguments": {"account_id": "buffer:chan-1",
+                "draft_id": preview["structuredContent"]["draft_id"], "idempotency_key": key}})).json()["result"]
+        assert not posted.get("isError"), posted
+        await asyncio.gather(*app.state.buffer_publisher.tasks)
+        status = (await rpc(client, token, "tools/call", {
+            "name": "buffer_post_status", "arguments": {
+                "operation_id": posted["structuredContent"]["operation_id"]}})).json()["result"]
+        assert not status.get("isError"), status
+        return status["structuredContent"]
+
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="https://mcp.example.test") as client:
+        rejected = await publish(client, buffer_only, "buffer-only-request")
+        assert rejected["state"] == "failed"
+        assert rejected["error"]["code"] == "rate_limited"
+        assert Backend.calls == []
+
+        fallback = await publish(client, dual, "dual-authorized-request")
+        assert fallback["state"] == "succeeded"
+        assert fallback["provider_used"] == "direct_x"
+        assert fallback["x_verified"] is True
+        assert fallback["direct_receipt"]["posts"][0]["verified"] is True
+        assert Backend.calls == [("1", "hello via fallback", None)]
+        assert QuotaBufferAPI.creates == 2

@@ -71,9 +71,12 @@ async def verified_buffer_channels(key):
                 or channel.get("isDisconnected") or channel.get("isLocked")):
             continue
         identifier = str(channel["id"])
-        selected.append({"account_id": "buffer:" + identifier, "channel_id": identifier,
-                         "display_name": channel.get("name") or "",
-                         "handle": channel.get("username") or ""})
+        selected_channel = {"account_id": "buffer:" + identifier, "channel_id": identifier,
+                            "display_name": channel.get("name") or "",
+                            "handle": channel.get("username") or ""}
+        if channel.get("x_account_id"):
+            selected_channel["x_account_id"] = channel["x_account_id"]
+        selected.append(selected_channel)
     return selected
 
 

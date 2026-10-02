@@ -3,7 +3,7 @@ import httpx
 import pytest
 
 from x_publisher.app import create_app
-from x_publisher.browser_connect import BASE, BUFFER_SETTINGS, CLIENT_SETTINGS
+from x_publisher.browser_connect import BASE, BUFFER_SETTINGS, BUFFER_FALLBACK_SETTINGS, CLIENT_SETTINGS
 from x_publisher.core import ORIGIN
 from test_pairing import SessionBackend
 from test_publisher import store
@@ -134,7 +134,8 @@ async def test_owner_can_connect_buffer_without_exposing_key(app, store, monkeyp
         async def list_channels(self):
             return [
                 {"id": "chan-1", "name": "My X account", "username": "myhandle",
-                 "service": "twitter", "isDisconnected": False, "isLocked": False},
+                 "service": "twitter", "x_account_id": "1234567890123456789",
+                 "isDisconnected": False, "isLocked": False},
                 {"id": "chan-2", "name": "Unavailable", "username": "other",
                  "service": "twitter", "isDisconnected": True, "isLocked": False},
             ]
@@ -159,5 +160,37 @@ async def test_owner_can_connect_buffer_without_exposing_key(app, store, monkeyp
         assert store.buffer_key() == "buffer-test-key-123456789"
         assert b"buffer-test-key-123456789" not in (store.directory / "buffer-key.enc").read_bytes()
         assert [c["account_id"] for c in store.buffer_channels()] == ["buffer:chan-1"]
+        assert store.buffer_channels()[0]["x_account_id"] == "1234567890123456789"
         page = await c.get(BUFFER_SETTINGS)
         assert "My X account" in page.text and "buffer-test-key-123456789" not in page.text
+
+
+async def test_owner_fallback_opt_in_requires_same_origin_and_csrf(app, store):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
+        assert store.buffer_direct_fallback_enabled() is False
+        denied = await c.post(BUFFER_FALLBACK_SETTINGS, data={"enabled": "1"},
+                              headers={"Origin": ORIGIN})
+        assert denied.status_code == 403
+        csrf = await login(c)
+        page = await c.get(BUFFER_SETTINGS)
+        assert "Use same-account direct X session" in page.text
+        assert "checked" not in page.text
+        wrong_origin = await c.post(BUFFER_FALLBACK_SETTINGS,
+                                    data={"csrf": csrf, "enabled": "1"},
+                                    headers={"Origin": "https://other.example"})
+        assert wrong_origin.status_code == 403
+        wrong_csrf = await c.post(BUFFER_FALLBACK_SETTINGS,
+                                  data={"csrf": "wrong", "enabled": "1"},
+                                  headers={"Origin": ORIGIN})
+        assert wrong_csrf.status_code == 403
+        assert store.buffer_direct_fallback_enabled() is False
+        enabled = await c.post(BUFFER_FALLBACK_SETTINGS,
+                               data={"csrf": csrf, "enabled": "1"},
+                               headers={"Origin": ORIGIN})
+        assert enabled.status_code == 303
+        assert store.buffer_direct_fallback_enabled() is True
+        assert "checked" in (await c.get(BUFFER_SETTINGS)).text
+        disabled = await c.post(BUFFER_FALLBACK_SETTINGS, data={"csrf": csrf},
+                                headers={"Origin": ORIGIN})
+        assert disabled.status_code == 303
+        assert store.buffer_direct_fallback_enabled() is False

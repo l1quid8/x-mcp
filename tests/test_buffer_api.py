@@ -29,10 +29,12 @@ async def test_list_channels_queries_organizations_and_filters_x():
                 "organizations": [{"id": "org_one"}, {"id": "org_two"}],
             }}})
         assert "BufferChannels" in body["query"]
+        assert "serviceId" in body["query"]
         organization_id = body["variables"]["input"]["organizationId"]
         if organization_id == "org_one":
             channels = [
                 {"id": "x_1", "name": "owner_handle", "displayName": "Owner", "service": "twitter",
+                 "serviceId": "1234567890123456789",
                  "isDisconnected": False, "isLocked": False, "isQueuePaused": False},
                 {"id": "b_1", "name": "blue_handle", "displayName": "Other", "service": "bluesky",
                  "isDisconnected": False, "isLocked": False, "isQueuePaused": False},
@@ -40,6 +42,7 @@ async def test_list_channels_queries_organizations_and_filters_x():
         else:
             channels = [
                 {"id": "x_2", "name": "second_handle", "displayName": None, "service": "twitter",
+                 "serviceId": "not-an-X-id",
                  "isDisconnected": True, "isLocked": False, "isQueuePaused": True},
             ]
         return httpx.Response(200, json={"data": {"channels": channels}})
@@ -54,11 +57,36 @@ async def test_list_channels_queries_organizations_and_filters_x():
     assert channels == [
         {"id": "x_1", "name": "Owner", "username": "owner_handle", "service": "twitter",
          "organizationId": "org_one", "isDisconnected": False, "isLocked": False,
-         "isQueuePaused": False},
+         "isQueuePaused": False, "x_account_id": "1234567890123456789"},
         {"id": "x_2", "name": "second_handle", "username": "second_handle", "service": "twitter",
          "organizationId": "org_two", "isDisconnected": True, "isLocked": False,
          "isQueuePaused": True},
     ]
+
+
+@pytest.mark.parametrize("service_id", ["", "0", "00123", "-123", "+123", "１２３",
+                                        "123.0", "18446744073709551616", None, 123])
+@pytest.mark.asyncio
+async def test_noncanonical_buffer_service_id_never_enables_direct_fallback(service_id):
+    def respond(request):
+        query = json.loads(request.content)["query"]
+        if "BufferOrganizations" in query:
+            return httpx.Response(200, json={"data": {"account": {
+                "organizations": [{"id": "org_one"}],
+            }}})
+        return httpx.Response(200, json={"data": {"channels": [{
+            "id": "x_1", "name": "handle", "displayName": "Account", "service": "twitter",
+            "serviceId": service_id, "isDisconnected": False, "isLocked": False,
+            "isQueuePaused": False,
+        }]}})
+
+    api = _api(respond)
+    try:
+        channels = await api.list_channels()
+    finally:
+        await api.close()
+    assert len(channels) == 1
+    assert "x_account_id" not in channels[0]
 
 
 @pytest.mark.asyncio

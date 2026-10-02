@@ -159,8 +159,10 @@ class MediaStore:
                     digest, canonical(metadata), mid))
             return {"media_id": mid, **metadata}
 
-    async def fetch(self, account, url, name="attachment"):
+    async def fetch(self, account, url, name="attachment", max_bytes=None):
         public_url(url)
+        if max_bytes is not None and (not isinstance(max_bytes, int) or not 0 < max_bytes <= MAX_FILE):
+            raise Problem("invalid_size", "Media download limit must be between 1 byte and 8 GiB")
         resolver = PublicResolver()
         connector = aiohttp.TCPConnector(resolver=resolver, use_dns_cache=False, limit=2)
         timeout = aiohttp.ClientTimeout(total=7200, sock_connect=20, sock_read=60)
@@ -176,7 +178,9 @@ class MediaStore:
                         if response.status != 200:
                             raise Problem("media_download_failed", f"Media source returned HTTP {response.status}; refresh expired links")
                         length = response.content_length
-                        reserved = length if length is not None else MAX_FILE
+                        if max_bytes is not None and length is not None and length > max_bytes:
+                            raise Problem("media_too_large", "Media exceeds the allowed download size")
+                        reserved = length if length is not None else (max_bytes or MAX_FILE)
                         upload = self.begin(account, name, reserved)
                         mid = upload["media_id"]
                         with self.store.db:

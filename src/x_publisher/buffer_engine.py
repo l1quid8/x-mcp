@@ -20,7 +20,7 @@ with warnings.catch_warnings():
     from twitter_text.config import config as text_config
 
 from .buffer_api import BufferAPI, BufferError
-from .core import Problem, canonical, identifier
+from .core import Attachment, Post, Problem, Publication, TERMINAL, canonical, identifier
 from .media import public_url
 
 
@@ -28,9 +28,11 @@ _MODES = frozenset({"shareNow", "addToQueue", "customScheduled"})
 
 
 class BufferPublisher:
-    def __init__(self, store, api_factory=BufferAPI):
+    def __init__(self, store, api_factory=BufferAPI, direct_publisher=None, media_store=None):
         self.store = store
         self.api_factory = api_factory
+        self.direct_publisher = direct_publisher
+        self.media_store = media_store
         self.account_locks: dict[str, asyncio.Lock] = {}
         self.tasks: set[asyncio.Task] = set()
 
@@ -43,6 +45,14 @@ class BufferPublisher:
         if not self.store.buffer_key():
             raise Problem("buffer_not_configured", "Configure a Buffer API key before publishing")
         return channel
+
+    def _connection_key(self, payload: dict, channel: dict) -> str:
+        """Use only the verified Buffer identity and exact key frozen at preview."""
+        key = self.store.buffer_key()
+        if (not key or payload.get("_buffer_key_fingerprint") != hashlib.sha256(key.encode()).hexdigest()
+                or payload.get("x_account_id") != channel.get("x_account_id")):
+            raise Problem("buffer_connection_changed", "Buffer connection changed; preview this post again")
+        return key
 
     @staticmethod
     def _content(text: str, image_urls: list[str] | None, mode: str, due_at: str | None) -> dict:
@@ -89,7 +99,10 @@ class BufferPublisher:
                 mode: str = "shareNow", due_at: str | None = None) -> dict:
         channel = self._channel(account_id)
         content = self._content(text, image_urls if image_urls is not None else [], mode, due_at)
-        payload = canonical({"provider": "buffer", "channel_id": channel["channel_id"], **content})
+        key = self.store.buffer_key()
+        payload = canonical({"provider": "buffer", "channel_id": channel["channel_id"],
+                             "x_account_id": channel.get("x_account_id"),
+                             "_buffer_key_fingerprint": hashlib.sha256(key.encode()).hexdigest(), **content})
         digest = hashlib.sha256((account_id + "\n" + payload).encode()).hexdigest()
         draft_id = identifier()
         with self.store.db:
@@ -97,13 +110,22 @@ class BufferPublisher:
                 draft_id, account_id, payload, digest, time.time() + 86400))
         return {"draft_id": draft_id, "account_id": account_id,
                 "channel": {"display_name": channel.get("display_name"), "handle": channel.get("handle")},
-                "content": json.loads(payload), "publishable": True, "blockers": [],
+                "content": {"provider": "buffer", "channel_id": channel["channel_id"], **content},
+                "publishable": True, "blockers": [],
                 "expires_in_seconds": 86400, "published": False}
 
-    def submit(self, account_id: str, draft_id: str, idempotency_key: str) -> dict:
+    def _fallback_account(self, channel: dict, account_id: str) -> None:
+        if (not isinstance(account_id, str) or not account_id.isdecimal()
+                or channel.get("x_account_id") != account_id):
+            raise Problem("fallback_account_mismatch", "The Buffer channel is not linked to this direct X account")
+        if self.direct_publisher is None or self.media_store is None:
+            raise Problem("fallback_unavailable", "Direct X publishing is not configured")
+        self.store.account(account_id)
+
+    def submit(self, account_id: str, draft_id: str, idempotency_key: str,
+               fallback_account_id: str | None = None) -> dict:
         if not isinstance(idempotency_key, str) or not 8 <= len(idempotency_key) <= 128:
             raise Problem("invalid_idempotency_key", "Use a stable request key of 8–128 characters")
-        channel = self._channel(account_id)
         with self.store.db:
             self.store.db.execute("BEGIN IMMEDIATE")
             old = self.store.db.execute(
@@ -119,17 +141,26 @@ class BufferPublisher:
                 if draft and old["hash"] != draft["hash"]:
                     raise Problem("idempotency_conflict", "This request key already belongs to different content")
                 return self.status(old["id"])
+            channel = self._channel(account_id)
             if not draft or draft["expires"] <= time.time():
                 raise Problem("draft_unavailable", "Draft is missing, expired, or belongs to another account")
             payload = json.loads(draft["payload"])
             if payload.get("provider") != "buffer" or payload.get("channel_id") != channel["channel_id"]:
                 raise Problem("draft_unavailable", "This draft does not belong to the selected Buffer channel")
+            self._connection_key(payload, channel)
             self._content(payload.get("text"), payload.get("image_urls"), payload.get("mode"), payload.get("due_at"))
+            if fallback_account_id is not None:
+                if payload["mode"] != "shareNow":
+                    raise Problem("fallback_unsupported_mode", "Automatic direct X fallback supports only shareNow posts")
+                self._fallback_account(channel, fallback_account_id)
             operation_id = identifier()
             now = time.time()
             result = {"provider": "buffer", "draft_id": draft_id, "buffer_post": None,
                       "buffer_status": None, "delivery_status": "not_submitted",
-                      "buffer_reports_sent": False, "x_verified": False, "error": None}
+                      "buffer_reports_sent": False, "x_verified": False, "error": None,
+                      "fallback_account_id": fallback_account_id, "fallback_used": False,
+                      "fallback_reason": None, "provider_used": None,
+                      "direct_operation_id": None, "direct_receipt": None}
             self.store.db.execute("INSERT INTO operations VALUES (?,?,?,?,?,'queued',?,'queued',?,?)", (
                 operation_id, account_id, idempotency_key, draft["hash"], draft["payload"],
                 canonical(result), now, now))
@@ -154,6 +185,7 @@ class BufferPublisher:
         result["buffer_status"] = status
         result["buffer_reports_sent"] = status == "sent"
         result["x_verified"] = False  # Buffer's status is not an X read-back.
+        result["provider_used"] = "buffer"
         result.pop("refresh_error", None)
         if status == "sent":
             result["delivery_status"] = "sent_reported_by_buffer"
@@ -172,6 +204,91 @@ class BufferPublisher:
             result["delivery_status"] = "accepted_by_buffer"
         return "buffer_accepted"
 
+    def _record_direct(self, operation_id: str, result: dict, child: dict) -> None:
+        """Project the direct child receipt without claiming Buffer delivered it."""
+        # Serialize projections across status requests and workers. Read the
+        # child's newest durable state while holding the SQLite write lock so
+        # an older observation cannot overwrite a verified parent receipt.
+        with self.store.db:
+            self.store.db.execute("BEGIN IMMEDIATE")
+            current = json.loads(self.store.operation(operation_id)["result"])
+            child = self.direct_publisher.status(child["operation_id"])
+            result.clear()
+            result.update(current)
+            result["direct_operation_id"] = child["operation_id"]
+            result["direct_receipt"] = child
+            result["provider_used"] = "direct_x"
+            result["fallback_used"] = True
+            result["x_verified"] = child["state"] == "succeeded" and bool(child.get("posts")) and all(
+                post.get("verified") is True for post in child["posts"])
+            state = child["state"]
+            if state == "succeeded":
+                result["delivery_status"] = "verified_on_x" if result["x_verified"] else "direct_submission_complete"
+                result["error"] = None
+            elif state in {"failed", "partial", "unknown"}:
+                result["delivery_status"] = ("direct_outcome_unknown" if state in {"partial", "unknown"}
+                                             else "direct_publish_failed")
+                result["error"] = child.get("error") or {
+                    "code": "direct_publish_failed", "message": "Direct X publishing did not complete"}
+            else:
+                result["delivery_status"] = "submitting_through_direct_x"
+                result["error"] = None
+            self.store.db.execute("UPDATE operations SET state=?,result=?,phase=?,updated=? WHERE id=?", (
+                state, canonical(result), "direct_" + child.get("phase", state), time.time(), operation_id))
+
+    def _existing_direct_child(self, result: dict) -> dict | None:
+        """Find a committed child if the process stopped before linking its ID."""
+        operation_id = result.get("direct_operation_id")
+        if operation_id:
+            return self.direct_publisher.status(operation_id)
+        account_id = result.get("fallback_account_id")
+        request_key = result.get("direct_request_key")
+        if not account_id or not request_key:
+            return None
+        row = self.store.db.execute(
+            "SELECT id FROM operations WHERE account=? AND idempotency=?",
+            (account_id, request_key)).fetchone()
+        return self.direct_publisher.status(row["id"]) if row else None
+
+    async def _fallback(self, operation_id: str, row: dict, result: dict, payload: dict) -> None:
+        if self.store.setting("buffer_direct_fallback_enabled", False) is not True:
+            raise Problem("fallback_disabled", "Direct X fallback was disabled")
+        account_id = result["fallback_account_id"]
+        channel = self._channel(row["account"])
+        self._connection_key(payload, channel)
+        self._fallback_account(channel, account_id)
+        if payload["mode"] != "shareNow":
+            raise Problem("fallback_unsupported_mode", "Automatic direct X fallback supports only shareNow posts")
+        result["fallback_reason"] = "buffer_api_rate_limited"
+        result["delivery_status"] = "preparing_direct_x"
+        self.store.update_operation(operation_id, "running", result, "preparing_direct_x")
+        attachments = []
+        for number, url in enumerate(payload["image_urls"], start=1):
+            media = await self.media_store.fetch(account_id, url, f"buffer-image-{number}",
+                                                max_bytes=5 * 1024**2)
+            if media.get("kind") != "image":
+                raise Problem("unsupported_media", "Direct X fallback accepts still images only")
+            attachments.append(Attachment(media_id=media["media_id"]))
+        publication = Publication(kind="post", posts=[Post(text=payload["text"], attachments=attachments)])
+        preview = self.direct_publisher.preview(account_id, publication)
+        if not preview["publishable"]:
+            blocker = preview["blockers"][0]
+            raise Problem(blocker["code"], blocker["message"])
+        result["direct_draft_id"] = preview["draft_id"]
+        result["direct_request_key"] = "buffer-fallback-" + hashlib.sha256(operation_id.encode()).hexdigest()
+        self.store.update_operation(operation_id, "running", result, "submitting_to_direct_x")
+        if not self.store.buffer_direct_fallback_enabled():
+            raise Problem("fallback_disabled", "Direct X fallback was disabled")
+        self._connection_key(payload, self._channel(row["account"]))
+        child = self.direct_publisher.submit(account_id, preview["draft_id"], result["direct_request_key"])
+        self._record_direct(operation_id, result, child)
+        # The child publisher owns the X write and its idempotency key. Poll only
+        # its local receipt; never reissue the Buffer or direct create call.
+        while child["state"] not in TERMINAL:
+            await asyncio.sleep(0.25)
+            child = self.direct_publisher.status(child["operation_id"])
+            self._record_direct(operation_id, result, child)
+
     async def run(self, operation_id: str) -> None:
         row = self.store.operation(operation_id)
         lock = self.account_locks.setdefault(row["account"], asyncio.Lock())
@@ -184,8 +301,9 @@ class BufferPublisher:
                 payload = json.loads(row["payload"])
                 if payload.get("provider") != "buffer" or payload.get("channel_id") != channel["channel_id"]:
                     raise Problem("draft_unavailable", "This draft does not belong to the selected Buffer channel")
+                key = self._connection_key(payload, channel)
                 self._content(payload.get("text"), payload.get("image_urls"), payload.get("mode"), payload.get("due_at"))
-                api = self.api_factory(self.store.buffer_key())
+                api = self.api_factory(key)
                 self.store.update_operation(operation_id, "running", result, "submitting_to_buffer")
                 submitting = True
                 post = await api.create_post(channel["channel_id"], payload["text"],
@@ -202,6 +320,30 @@ class BufferPublisher:
                 self.store.update_operation(operation_id, "unknown" if submitting else "failed", result, "interrupted")
                 raise
             except Exception as exc:
+                if (isinstance(exc, BufferError) and exc.code == "rate_limited"
+                        and exc.definite and result.get("fallback_account_id")
+                        and result.get("buffer_post") is None and submitting):
+                    try:
+                        submitting = False  # Buffer definitively rejected this create.
+                        await self._fallback(operation_id, row, result, payload)
+                        return
+                    except asyncio.CancelledError:
+                        result["error"] = {"code": "interrupted", "message": "Direct X fallback was interrupted; inspect its receipt"}
+                        self.store.update_operation(operation_id, "unknown", result, "interrupted")
+                        raise
+                    except Exception as fallback_exc:
+                        child = self._existing_direct_child(result)
+                        if child:
+                            # A direct child exists. Its recorded state is the
+                            # only reliable outcome; never create another one.
+                            self._record_direct(operation_id, result, child)
+                            return
+                        code = fallback_exc.code if isinstance(fallback_exc, Problem) else "fallback_unavailable"
+                        message = (fallback_exc.message if isinstance(fallback_exc, Problem)
+                                   else "Direct X fallback could not be prepared")
+                        result["error"] = {"code": code, "message": message}
+                        self.store.update_operation(operation_id, "failed", result, "fallback_stopped")
+                        return
                 if isinstance(exc, BufferError):
                     code, message, definite = exc.code, exc.message, exc.definite
                 elif isinstance(exc, Problem):
@@ -223,6 +365,10 @@ class BufferPublisher:
         result = json.loads(row["result"])
         if result.get("provider") != "buffer":
             raise Problem("operation_not_found", "Unknown Buffer operation")
+        child = self._existing_direct_child(result)
+        if child:
+            self._record_direct(operation_id, result, child)
+            return self.status(operation_id)
         post_id = (result.get("buffer_post") or {}).get("id")
         if not post_id:
             return self.status(operation_id)

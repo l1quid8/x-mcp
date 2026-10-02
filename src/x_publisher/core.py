@@ -204,6 +204,15 @@ class Store:
             return []
         return self.setting("buffer_channels", [])
 
+    def buffer_direct_fallback_enabled(self) -> bool:
+        """Owner opt-in; a matching verified X account is still required."""
+        return self.setting("buffer_direct_fallback_enabled", False) is True
+
+    def set_buffer_direct_fallback_enabled(self, enabled: bool) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("Expected a Boolean fallback setting")
+        self.set_setting("buffer_direct_fallback_enabled", enabled)
+
     def save_buffer_channels(self, channels: list[dict]) -> None:
         """Persist channels verified against the configured Buffer credential."""
         if not isinstance(channels, list):
@@ -224,8 +233,16 @@ class Store:
             if (not isinstance(display_name, str) or len(display_name) > 256
                     or not isinstance(handle, str) or len(handle) > 256):
                 raise ValueError("Invalid Buffer channel label")
-            selected.append({"account_id": account_id, "channel_id": channel_id,
-                             "display_name": display_name, "handle": handle})
+            saved = {"account_id": account_id, "channel_id": channel_id,
+                     "display_name": display_name, "handle": handle}
+            if "x_account_id" in channel:
+                x_account_id = channel["x_account_id"]
+                if (not isinstance(x_account_id, str)
+                        or not re.fullmatch(r"[1-9][0-9]{0,19}", x_account_id)
+                        or int(x_account_id) > 2**64 - 1):
+                    raise ValueError("Invalid X account ID for Buffer channel")
+                saved["x_account_id"] = x_account_id
+            selected.append(saved)
             seen.add(account_id)
         self.set_setting("buffer_channels", selected)
 

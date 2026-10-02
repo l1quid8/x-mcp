@@ -23,6 +23,9 @@ components or a copy of X's data.
   queue it, or schedule it for a connected X channel, then check Buffer's
   delivery status. Image URLs must be direct, public, and remain available
   until Buffer sends the post.
+- **Optional direct fallback:** after a definite Buffer API quota rejection,
+  immediately publish a `shareNow` post through an authorized direct X session
+  for the same X account. The receipt identifies the route actually used.
 - **Publish through a direct X session:** stage media, preview an exact post or
   thread, submit it to a selected account, and check the operation receipt.
   Article publishing is disabled pending protocol validation.
@@ -177,6 +180,29 @@ publishes. [Buffer explains media hosting requirements](https://developers.buffe
 can still mean queued or processing. Check `buffer_post_status` before reporting
 delivery to X. This integration does not turn Buffer into a general X search or
 cleanup API.
+
+#### Optional direct X fallback
+
+The server owner can enable **direct X fallback** on the Buffer connection page.
+Buffer's verified X account ID must match the numeric ID of a connected direct
+X session. The MCP client must be granted `buffer:publish` for the Buffer channel
+and `publisher:publish` for that direct X account. Image posts also require
+`publisher:media`. An existing Buffer-only grant does not gain direct-session
+access; reconnect the MCP client and approve both accounts and permissions.
+If you reconnect a channel to a different X account inside Buffer, refresh its
+channel list by re-entering the key on the owner page or running
+`x-mcp-admin sync-buffer-channels` before relying on fallback. A Buffer key or
+verified account change invalidates existing post previews.
+
+For `shareNow` posts, a definite Buffer API quota rejection (HTTP 429 or its
+equivalent GraphQL code) can trigger one direct X attempt without another
+prompt. This does not apply to queued or scheduled posts, Buffer posting/queue
+limits, timeouts, server errors, or unclear responses. Those outcomes stop so
+the same post is not sent twice. Direct fallback still depends on a working X
+session and may fail if X restricts it. Public image URLs are downloaded to
+private staging, with a 5 MiB cap per image, before direct publication. The
+operation receipt names the provider and gives the direct X post result.
+[Buffer documents its API limits and 429 response](https://developers.buffer.com/guides/api-limits.html).
 
 ### Direct X session and cleanup
 

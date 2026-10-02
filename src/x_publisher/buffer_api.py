@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from ipaddress import ip_address
+import re
 from urllib.parse import urlsplit
 
 import httpx
@@ -18,7 +19,7 @@ _POST_FIELDS = "id channelId text status dueAt sentAt"
 _ORGANIZATIONS = "query BufferOrganizations { account { organizations { id } } }"
 _CHANNELS = """query BufferChannels($input: ChannelsInput!) {
   channels(input: $input) {
-    id name displayName service isDisconnected isLocked isQueuePaused
+    id name displayName service serviceId isDisconnected isLocked isQueuePaused
   }
 }"""
 _GET_POST = f"""query BufferPost($input: PostInput!) {{
@@ -168,7 +169,7 @@ class BufferAPI:
                 )):
                     raise BufferError("invalid_response", "Buffer returned incomplete X channel availability.", definite=False)
                 display_name = self._safe_string(raw.get("displayName"))
-                channels.append({
+                channel = {
                     "id": channel_id,
                     "name": display_name or username,
                     "username": username,
@@ -177,7 +178,14 @@ class BufferAPI:
                     "isDisconnected": raw["isDisconnected"],
                     "isLocked": raw["isLocked"],
                     "isQueuePaused": raw["isQueuePaused"],
-                })
+                }
+                # Buffer documents serviceId as the social network's external
+                # account ID. Only a canonical X numeric ID may authorize a
+                # same-account direct-session fallback later.
+                x_account_id = _x_account_id(raw.get("serviceId"))
+                if x_account_id is not None:
+                    channel["x_account_id"] = x_account_id
+                channels.append(channel)
         return channels
 
     async def get_post(self, post_id: str) -> dict:
@@ -254,6 +262,12 @@ def _public_https_url(value: str) -> bool:
     except ValueError:
         return True  # DNS reachability is checked by Buffer when the asset is used.
     return address.is_global
+
+
+def _x_account_id(value: object) -> str | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", value):
+        return None
+    return value if int(value) <= 2**64 - 1 else None
 
 
 def _utc_datetime(value: str) -> bool:

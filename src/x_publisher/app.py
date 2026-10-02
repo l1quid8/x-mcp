@@ -119,9 +119,9 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
     owner_key = owner_key or (credentials / "owner-key").read_text().strip()
     oauth = OwnerOAuth(store, owner_key)
     publisher = Publisher(store, backend_factory)
-    buffer_publisher = BufferPublisher(store, buffer_api_factory)
     cleanup = Cleanup(store, cleanup_backend_factory)
     media = MediaStore(store, quota=int(os.environ.get("XP_STAGING_QUOTA_BYTES", str(24 * 1024**3))))
+    buffer_publisher = BufferPublisher(store, buffer_api_factory, direct_publisher=publisher, media_store=media)
     read_pool = read_pool or NitterPool()
     server = MCPServer(name="x-mcp", version="0.1.0", instructions=(
         "Public X search and timelines come from third-party mirrors and may be stale, incomplete or unverified. "
@@ -134,6 +134,9 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
         "A queued operation is not a successful publication: poll publication_status and report exact receipts. "
         "Buffer accepts posts for a connected X channel through a separate provider. A Buffer receipt may mean queued or accepted, "
         "not published on X; use buffer_post_status and report its actual state. "
+        "If the owner enabled same-account direct fallback and this client has both provider grants, "
+        "an explicit Buffer API quota rejection may route a shareNow post through the direct X session. "
+        "Report the actual provider and receipt; never switch providers after an uncertain Buffer response. "
         "Do not retry unknown outcomes or replace idempotency keys to force a second submission. "
         "Articles are currently blocked pending authenticated backend validation. "
         "For cleanup, external JEV/Laya decides KEEP/DELETE/REVIEW. X Publisher validates only. "
@@ -151,6 +154,27 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
 
     register_read_tools(server, authorize_read, read_pool)
     background = set()
+
+    def direct_fallback_account(ctx: Context, buffer_account_id: str,
+                                image_urls: list[str] | None, mode: str) -> str | None:
+        """Allow a provider switch only under owner opt-in and both account grants."""
+        if not store.buffer_direct_fallback_enabled() or mode != "shareNow":
+            return None
+        channel = store.buffer_channel(buffer_account_id)
+        x_account_id = channel.get("x_account_id")
+        if not isinstance(x_account_id, str) or not re.fullmatch(r"[0-9]+", x_account_id):
+            return None
+        principal = ctx.request_context.request.scope.get("publisher_principal")
+        needed = {"buffer:publish", "publisher:publish"}
+        if image_urls:
+            needed.add("publisher:media")
+        if principal is None or not needed.issubset(principal.scopes) or x_account_id not in principal.accounts:
+            return None
+        try:
+            store.account(x_account_id)
+        except Problem:
+            return None
+        return x_account_id
 
     @server.tool(structured_output=True, annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False), meta=meta("publisher:status"))
     @safe_tool
@@ -249,10 +273,13 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
             if not account_id.startswith("buffer:"):
                 continue
             try:
-                accounts.append(store.buffer_channel(account_id))
+                channel = store.buffer_channel(account_id)
+                accounts.append({**channel, "direct_text_fallback_eligible": bool(
+                    direct_fallback_account(ctx, account_id, [], "shareNow"))})
             except Problem:
                 continue
         return {"configured": bool(store.buffer_key()), "channels": accounts,
+                "direct_fallback_enabled_by_owner": store.buffer_direct_fallback_enabled(),
                 "image_requirement": "Images need direct public HTTPS URLs accessible until Buffer publishes."}
 
     @server.tool(structured_output=True, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False), meta=meta("buffer:publish"))
@@ -262,7 +289,11 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
                                   due_at: str | None = None) -> dict[str, Any]:
         """Validate and freeze one Buffer X post. Does not send anything to Buffer or X."""
         check(ctx, "buffer:publish", account_id)
-        return buffer_publisher.preview(account_id, text, image_urls, mode, due_at)
+        preview = buffer_publisher.preview(account_id, text, image_urls, mode, due_at)
+        fallback_account = direct_fallback_account(ctx, account_id, image_urls, mode)
+        preview["direct_fallback_if_buffer_rate_limited"] = {
+            "eligible": bool(fallback_account), "x_account_id": fallback_account}
+        return preview
 
     @server.tool(structured_output=True, annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True, idempotentHint=True), meta=meta("buffer:publish"))
     @safe_tool
@@ -270,7 +301,17 @@ def create_app(store=None, owner_key=None, backend_factory=XBackend, cleanup_bac
                                   ctx: Context) -> dict[str, Any]:
         """Submit the exact frozen Buffer post after an explicit user request. Reuse the same request key on retries."""
         check(ctx, "buffer:publish", account_id)
-        return buffer_publisher.submit(account_id, draft_id, idempotency_key)
+        draft = store.db.execute("SELECT payload FROM drafts WHERE id=? AND account=?", (draft_id, account_id)).fetchone()
+        try:
+            payload = json.loads(draft["payload"]) if draft else {}
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        fallback_account = direct_fallback_account(ctx, account_id,
+            payload.get("image_urls"), payload.get("mode"))
+        return buffer_publisher.submit(account_id, draft_id, idempotency_key,
+                                       fallback_account_id=fallback_account)
 
     @server.tool(structured_output=True, annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True), meta=meta("buffer:status"))
     @safe_tool
