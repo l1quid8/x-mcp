@@ -69,9 +69,10 @@ a private network or bind its ports to loopback only.
 5. After the X home feed appears, choose **Finish connection**. X MCP checks
    the authenticated account ID before storing the encrypted session.
 6. Connect the MCP client and approve that account on the separate MCP consent
-   page. If the client says its callback is not allowed, copy the exact callback
-   URL into **Allow an MCP client callback** on `/x-mcp/connect`, then retry.
-   Publishing uses the saved session; the temporary browser can close.
+   page. If the client says its callback is not allowed, open
+   `/x-mcp/connect/client-settings`, enter the owner key, and allow the exact
+   callback URL shown by the client. Then retry. Publishing uses the saved
+   session; the temporary browser can close.
 
 If X rejects login from the VPS or requires a passkey stored only on the local
 computer, use another X verification method or the optional local connection

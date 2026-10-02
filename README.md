@@ -164,8 +164,9 @@ not publish a post or grant an MCP client permission to use that account. Use
 `x-mcp-admin accounts` to inspect connected IDs. For a direct client credential,
 the root-only `x-mcp-admin issue-client` command writes a private connection
 file with your resource URL and selected scopes. For OAuth clients, allow their
-exact callback with `x-mcp-admin allow-callback` and approve the requested
-accounts and sensitive scopes on your consent page.
+exact callback in the owner-only `/x-mcp/connect/client-settings` page or with
+`x-mcp-admin allow-callback`, then approve the requested accounts and sensitive
+scopes on your consent page.
 
 ## Connect Codex
 
@@ -178,7 +179,8 @@ codex mcp add x-mcp --url https://mcp.example.com/x-mcp/mcp
 Codex CLI, the IDE extension, and the ChatGPT desktop app share this local MCP
 configuration. The server requires authentication. You can use OAuth with
 `codex mcp login x-mcp --oauth-client-registration dcr`; the server owner must
-first approve the Codex callback path with `x-mcp-admin allow-callback`. Codex
+first approve the Codex callback path in `/x-mcp/connect/client-settings` or with
+`x-mcp-admin allow-callback`. Codex
 uses a `127.0.0.1` callback whose port can change between logins, so approval
 is tied to its exact `/callback/...` path. The consent page then lets the owner
 grant only the requested scopes and connected accounts. New grants request

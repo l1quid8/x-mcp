@@ -3,7 +3,7 @@ import httpx
 import pytest
 
 from x_publisher.app import create_app
-from x_publisher.browser_connect import BASE
+from x_publisher.browser_connect import BASE, CLIENT_SETTINGS
 from x_publisher.core import ORIGIN
 from test_pairing import SessionBackend
 from test_publisher import store
@@ -79,7 +79,22 @@ async def test_reconnect_rejects_different_identity_and_cancel_closes(app, store
 
 async def test_owner_can_allow_exact_client_callback_in_browser(app, store):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as c:
-        csrf = await login(c)
+        assert "Client callback URL" not in (await c.get(BASE)).text
+        settings = await c.get(CLIENT_SETTINGS)
+        assert settings.status_code == 200
+        assert "Server owner key" in settings.text
+        assert "Exact client callback URL" not in settings.text
+        owner_login = await c.post(BASE + "/login", data={"key": "owner-test-key", "return_to": "client-settings"},
+                                   headers={"Origin": ORIGIN})
+        assert owner_login.status_code == 303
+        assert owner_login.headers["location"] == CLIENT_SETTINGS
+        assert "Client callback URL" not in (await c.get(BASE)).text
+        settings = await c.get(CLIENT_SETTINGS)
+        assert "Exact client callback URL" in settings.text
+        assert 'name="csrf"' in settings.text
+        from html import unescape
+        import re
+        csrf = unescape(re.search(r'name="csrf" value="([^"]+)"', settings.text).group(1))
         path = BASE + "/callback"
         headers = {"Origin": ORIGIN}
         bad = await c.post(path, data={"csrf": csrf, "callback": "https://evil.example/cb"}, headers=headers)

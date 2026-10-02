@@ -20,6 +20,7 @@ from .core import ORIGIN, PREFIX, Problem
 from .pairing import verify_and_store
 
 BASE = PREFIX + "/connect"
+CLIENT_SETTINGS = BASE + "/client-settings"
 COOKIE = "__Secure-xmcp-connect"
 WORKER = os.environ.get("X_MCP_BROWSER_WORKER_URL", "").rstrip("/")
 VIEW = os.environ.get("X_MCP_BROWSER_VIEW_URL", "").rstrip("/")
@@ -84,7 +85,7 @@ class BrowserConnect:
             self.active = None
         active = self.active and hmac.compare_digest(self.active["login"], login)
         if not self.configured():
-            content = '<p>The VPS browser is not configured on this server. You can still allow an MCP client callback below.</p>'
+            content = '<p>The VPS browser is not configured on this server.</p>'
         elif active:
             content = '<p>Sign in to X below. When you see your home feed, select Finish connection.</p><iframe title="X login browser on your server" src="'+BASE+'/view/vnc.html?autoconnect=1&amp;resize=scale&amp;path='+BASE.lstrip('/')+'/ws" style="width:100%;height:650px;border:1px solid #888"></iframe>'
             content += '<form method="post" action="'+BASE+'/finish"><input type="hidden" name="csrf" value="'+csrf+'"><button>Finish connection</button></form>'
@@ -93,24 +94,39 @@ class BrowserConnect:
             content = '<p>Another browser connection is in progress. Try again when it finishes.</p>'
         else:
             content = '<form method="post" action="'+BASE+'/start"><input type="hidden" name="csrf" value="'+csrf+'"><label>Account <select name="account">'+choices+'</select></label><button>Open X sign-in</button></form>'
-        callback_form = ('<hr><h2>Allow an MCP client callback</h2><p>Copy the exact callback URL shown by your MCP client, then retry its connection.</p>'
-                         '<form method="post" action="'+BASE+'/callback"><input type="hidden" name="csrf" value="'+csrf+'">'
-                         '<label>Client callback URL <input type="url" name="callback" required style="width:80%"></label>'
-                         '<button>Allow this callback</button></form>')
-        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:1000px;margin:24px auto;padding:24px}label,button{font:inherit;margin:12px}</style><h1>Connect X account</h1>'+content+callback_form+'</html>', headers=self.headers())
+        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect X</title><style>body{font:18px system-ui;max-width:1000px;margin:24px auto;padding:24px}label,button{font:inherit;margin:12px}</style><h1>Connect X account</h1>'+content+'</html>', headers=self.headers())
+
+    async def client_settings(self, request):
+        login = self.login(request)
+        if not login:
+            content = ('<p>Enter your server owner key to manage MCP client callbacks.</p>'
+                       '<form method="post" action="'+BASE+'/login"><input type="hidden" name="return_to" value="client-settings">'
+                       '<label>Server owner key <input type="password" name="key" required maxlength="256" autocomplete="off"></label>'
+                       '<button>Continue</button></form>')
+        else:
+            csrf = html.escape(self.oauth.get("connect-login", login)["csrf"], quote=True)
+            content = ('<p>Use this only when Codex or ChatGPT says its callback URL is not allowed. '
+                       'The callback returns you to that MCP client after you approve access; it does not connect an X account.</p>'
+                       '<form method="post" action="'+BASE+'/callback"><input type="hidden" name="csrf" value="'+csrf+'">'
+                       '<label>Exact client callback URL <input type="url" name="callback" required style="display:block;width:100%;box-sizing:border-box"></label>'
+                       '<button>Allow callback</button></form>')
+        return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP client settings</title><style>body{font:18px system-ui;max-width:620px;margin:50px auto;padding:24px}input,button{font:inherit;padding:12px}label{display:block;margin:20px 0}</style><h1>MCP client settings</h1>'+content+'</html>', headers=self.headers())
 
     async def authorize(self, request):
         if request.headers.get("origin") != ORIGIN:
             return JSONResponse({"error": "invalid_origin"}, status_code=403, headers=self.headers())
         try:
-            supplied = (await self.form(request)).get("key", "")
+            form = await self.form(request)
+            supplied = form.get("key", "")
         except ValueError:
             supplied = ""
+            form = {}
         if not hmac.compare_digest(supplied.encode(), self.oauth.owner_key.encode()):
             return JSONResponse({"error": "unauthorized"}, status_code=403, headers=self.headers())
         login, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         self.oauth.put("connect-login", login, {"csrf": csrf}, 900)
-        response = RedirectResponse(BASE, status_code=303, headers=self.headers())
+        destination = CLIENT_SETTINGS if form.get("return_to") == "client-settings" else BASE
+        response = RedirectResponse(destination, status_code=303, headers=self.headers())
         response.set_cookie(COOKIE, login, secure=True, httponly=True, samesite="strict", path=BASE, max_age=900)
         return response
 
@@ -245,6 +261,7 @@ class BrowserConnect:
 
 def browser_connect_routes(flow):
     return [Route(BASE, flow.page, methods=["GET"]),
+            Route(CLIENT_SETTINGS, flow.client_settings, methods=["GET"]),
             Route(BASE+"/login", flow.authorize, methods=["POST"]),
             Route(BASE+"/{action}", flow.action, methods=["POST"]),
             Route(BASE+"/view/{path:path}", flow.view, methods=["GET"]),
